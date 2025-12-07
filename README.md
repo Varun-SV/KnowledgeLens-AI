@@ -29,8 +29,8 @@ These instructions will get you a copy of the project up and running on your loc
 
 1.  **Clone the repository:**
     ```bash
-    git clone https://github.com/your-username/knowledge-lens-ai.git
-    cd knowledge-lens-ai
+    git clone https://github.com/Varun-SV/KnowledgeLens-AI.git
+    cd KnowledgeLens-AI
     ```
 
 2.  **Create a virtual environment (recommended):**
@@ -44,8 +44,7 @@ These instructions will get you a copy of the project up and running on your loc
     ```bash
     pip install -r requirements.txt
     ```
-    (Note: If `requirements.txt` doesn't exist, create it with `pip freeze > requirements.txt` after installing: `streamlit networkx pyvis pypdf requests`)
-
+    
 ### Running the Application
 
 1.  **Start your LLM endpoint:**
@@ -54,7 +53,7 @@ These instructions will get you a copy of the project up and running on your loc
 
 2.  **Run the Streamlit application:**
     ```bash
-    streamlit run knowledge_graph.py
+    streamlit run KnowledgeLens_AI.py
     ```
 
     The application will open in your default web browser (usually `http://localhost:8501`).
