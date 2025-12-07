@@ -3,276 +3,320 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>KnowledgeLens AI: Browser-Based Knowledge Graphs</title>
-    
-    <!-- Dependencies -->
+    <title>KnowledgeLens AI: Interactive Guide</title>
     <script src="https://cdn.tailwindcss.com"></script>
     <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
-    <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/@stlite/mountable@0.53.0/build/stlite.css" />
-    
     <style>
-        /* Custom Scrollbar */
-        ::-webkit-scrollbar { width: 8px; }
-        ::-webkit-scrollbar-track { background: #fdfbf7; }
-        ::-webkit-scrollbar-thumb { background: #d6d3d1; border-radius: 4px; }
-        ::-webkit-scrollbar-thumb:hover { background: #a8a29e; }
-
-        body {
-            background-color: #fdfbf7;
-            color: #44403c;
-            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
-            margin: 0;
-            overflow-x: hidden;
+        /* Custom Scrollbar for clean look */
+        ::-webkit-scrollbar {
+            width: 8px;
+        }
+        ::-webkit-scrollbar-track {
+            background: #fdfbf7;
+        }
+        ::-webkit-scrollbar-thumb {
+            background: #d6d3d1;
+            border-radius: 4px;
+        }
+        ::-webkit-scrollbar-thumb:hover {
+            background: #a8a29e;
         }
 
-        /* Chart Container (Landing Page) */
+        body {
+            background-color: #fdfbf7; /* Warm neutral background */
+            color: #44403c; /* Stone 700 */
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+        }
+
         .chart-container {
             position: relative;
             width: 100%;
             max-width: 600px;
-            margin: 0 auto;
+            margin-left: auto;
+            margin-right: auto;
             height: 300px;
             max-height: 400px;
         }
-        @media (min-width: 768px) { .chart-container { height: 350px; } }
 
-        /* Animation Utilities */
-        .fade-in { animation: fadeIn 0.5s ease-in-out; }
+        @media (min-width: 768px) {
+            .chart-container {
+                height: 350px;
+            }
+        }
+
+        /* Utility for transitions */
+        .fade-in {
+            animation: fadeIn 0.5s ease-in-out;
+        }
+
         @keyframes fadeIn {
             from { opacity: 0; transform: translateY(10px); }
             to { opacity: 1; transform: translateY(0); }
         }
 
-        /* Stlite App Container (Hidden by default) */
-        #stlite-root {
-            width: 100vw;
-            height: 100vh;
-            background-color: #0E1117; /* Streamlit Dark Theme Match */
-            display: none; /* Hidden initially */
-            position: fixed;
-            top: 0;
-            left: 0;
-            z-index: 9999;
+        .step-active {
+            border-left-color: #d97706; /* Amber 600 */
+            background-color: #fffbeb; /* Amber 50 */
         }
-
-        /* Smooth Hide/Show */
-        .hidden-section { display: none !important; }
     </style>
+    <!-- Chosen Palette: Warm Neutrals (Stone & Amber). Background: #fdfbf7, Text: #44403c, Accent: #d97706 -->
+    <!-- Application Structure Plan:
+        1. Hero Section: Immediate value prop (Browser-based + Local LLM).
+        2. "Why KnowledgeLens?": Interactive toggle comparing Traditional Cloud vs. KnowledgeLens (Privacy focus).
+        3. Feature Extraction Simulator: An interactive section where users "upload" a dummy file and see a Chart.js visualization of extracted entities, mimicking the app's core function.
+        4. The Critical Setup (CORS): A dedicated, interactive stepper for the complex CORS setup (Mac vs Windows) since this is the biggest friction point in the README.
+        5. Tech Stack & Footer: Summary of the architecture.
+        Why? The report is technical documentation. The user needs to understand *what* it does (The Simulator), *why* it's better (The Comparison), and *how* to make it work (The Stepper).
+    -->
+    <!-- Visualization & Content Choices:
+        1. "Why KnowledgeLens?" -> Goal: Compare -> Method: Interactive Cards -> Interaction: Click to toggle view -> Justification: Text-heavy comparison is boring; toggling highlights the differences.
+        2. "Entity Extraction Demo" -> Goal: Inform/Wow -> Method: Chart.js Bar Chart -> Interaction: Button click triggers animation -> Justification: Visualizes the "Extraction" feature described in the README without needing the actual Python backend.
+        3. "CORS Setup" -> Goal: Organize/Instruct -> Method: Tabbed Interface -> Interaction: Switch OS tabs -> Justification: The README splits instructions by OS; tabs prevent information overload.
+    -->
+    <!-- CONFIRMATION: NO SVG graphics used. NO Mermaid JS used. -->
 </head>
 <body class="flex flex-col min-h-screen">
 
-    <!-- ========================================== -->
-    <!-- LANDING PAGE SECTION -->
-    <!-- ========================================== -->
-    <div id="landing-page">
-        <!-- Navigation -->
-        <nav class="w-full bg-white/80 backdrop-blur-md border-b border-stone-200 sticky top-0 z-50">
-            <div class="max-w-6xl mx-auto px-4 py-3 flex justify-between items-center">
-                <div class="font-bold text-xl text-stone-800 tracking-tight cursor-pointer" onclick="window.location.reload()">
-                    🧠 KnowledgeLens AI
-                </div>
-                <div class="hidden md:flex space-x-6 text-sm font-medium text-stone-600">
-                    <a href="#features" class="hover:text-amber-600 transition">Features</a>
-                    <a href="#demo" class="hover:text-amber-600 transition">Simulation</a>
-                    <a href="#setup" class="hover:text-amber-600 transition">Setup Guide</a>
-                </div>
-                <button onclick="launchApp()" class="bg-amber-600 text-white px-4 py-2 rounded-full text-sm font-semibold hover:bg-amber-700 transition shadow-sm">
-                    Launch App 🚀
-                </button>
+    <!-- Navigation -->
+    <nav class="w-full bg-white/80 backdrop-blur-md border-b border-stone-200 sticky top-0 z-50">
+        <div class="max-w-6xl mx-auto px-4 py-3 flex justify-between items-center">
+            <div class="font-bold text-xl text-stone-800 tracking-tight">
+                🧠 KnowledgeLens AI
             </div>
-        </nav>
+            <div class="hidden md:flex space-x-6 text-sm font-medium text-stone-600">
+                <a href="#features" class="hover:text-amber-600 transition">Features</a>
+                <a href="#demo" class="hover:text-amber-600 transition">Simulation</a>
+                <a href="#setup" class="hover:text-amber-600 transition">Setup Guide</a>
+            </div>
+            <a href="https://varun-sv.github.io/KnowledgeLens-AI/" target="_blank" class="bg-amber-600 text-white px-4 py-2 rounded-full text-sm font-semibold hover:bg-amber-700 transition shadow-sm">
+                Launch App 🚀
+            </a>
+        </div>
+    </nav>
 
-        <!-- Hero Section -->
-        <header class="w-full max-w-5xl mx-auto px-4 py-16 md:py-24 text-center">
-            <div class="inline-block px-3 py-1 mb-4 text-xs font-semibold tracking-wider text-amber-700 uppercase bg-amber-100 rounded-full">
-                Browser-Based &bull; Private &bull; Powerful
-            </div>
-            <h1 class="text-4xl md:text-6xl font-extrabold text-stone-900 mb-6 leading-tight">
-                Turn Documents into <br> <span class="text-amber-600">Knowledge Graphs</span> Locally.
-            </h1>
-            <p class="text-lg md:text-xl text-stone-600 mb-8 max-w-2xl mx-auto leading-relaxed">
-                No servers. No data leaks. Run powerful RAG and entity extraction entirely in your browser using <strong>Stlite</strong> and your local <strong>Ollama</strong> instance.
-            </p>
-            <div class="flex flex-col sm:flex-row justify-center gap-4">
-                <button onclick="launchApp()" class="px-8 py-3 bg-stone-800 text-white rounded-lg font-semibold hover:bg-stone-900 transition shadow-md">
-                    Get Started
-                </button>
-                <button onclick="document.getElementById('demo').scrollIntoView({behavior: 'smooth'})" class="px-8 py-3 bg-white text-stone-700 border border-stone-300 rounded-lg font-semibold hover:bg-stone-50 transition">
-                    See How It Works
-                </button>
-            </div>
-        </header>
+    <!-- Hero Section -->
+    <header class="w-full max-w-5xl mx-auto px-4 py-16 md:py-24 text-center">
+        <div class="inline-block px-3 py-1 mb-4 text-xs font-semibold tracking-wider text-amber-700 uppercase bg-amber-100 rounded-full">
+            Browser-Based &bull; Private &bull; Powerful
+        </div>
+        <h1 class="text-4xl md:text-6xl font-extrabold text-stone-900 mb-6 leading-tight">
+            Turn Documents into <br> <span class="text-amber-600">Knowledge Graphs</span> Locally.
+        </h1>
+        <p class="text-lg md:text-xl text-stone-600 mb-8 max-w-2xl mx-auto leading-relaxed">
+            No servers. No data leaks. Run powerful RAG and entity extraction entirely in your browser using <strong>Stlite</strong> and your local <strong>Ollama</strong> instance.
+        </p>
+        <div class="flex flex-col sm:flex-row justify-center gap-4">
+            <a href="#setup" class="px-8 py-3 bg-stone-800 text-white rounded-lg font-semibold hover:bg-stone-900 transition shadow-md">
+                Get Started
+            </a>
+            <button onclick="document.getElementById('demo').scrollIntoView({behavior: 'smooth'})" class="px-8 py-3 bg-white text-stone-700 border border-stone-300 rounded-lg font-semibold hover:bg-stone-50 transition">
+                See How It Works
+            </button>
+        </div>
+    </header>
 
-        <!-- Section: Features -->
-        <section id="features" class="w-full bg-white py-16 border-y border-stone-100">
-            <div class="max-w-5xl mx-auto px-4">
-                <div class="mb-12 text-center">
-                    <h2 class="text-3xl font-bold text-stone-800 mb-4">Why Browser-Based?</h2>
-                    <p class="text-stone-600 max-w-2xl mx-auto">
-                        Traditional apps send your data to the cloud. KnowledgeLens AI changes the paradigm by bringing the processing to you.
-                    </p>
-                </div>
-                <div class="grid md:grid-cols-2 gap-8">
-                    <!-- Traditional -->
-                    <div class="p-8 rounded-2xl bg-stone-50 border border-stone-100 hover:shadow-lg transition duration-300">
-                        <div class="text-3xl mb-4">☁️</div>
-                        <h3 class="text-xl font-bold text-stone-800 mb-2">Traditional Architecture</h3>
-                        <ul class="space-y-3 text-stone-600 text-sm">
-                            <li class="flex items-start"><span class="mr-2 text-red-500">✖</span> Uploads documents to external servers.</li>
-                            <li class="flex items-start"><span class="mr-2 text-red-500">✖</span> Requires expensive API keys.</li>
-                            <li class="flex items-start"><span class="mr-2 text-red-500">✖</span> Slow processing due to network latency.</li>
-                        </ul>
-                    </div>
-                    <!-- KnowledgeLens -->
-                    <div class="p-8 rounded-2xl bg-amber-50 border border-amber-100 ring-1 ring-amber-200 shadow-sm relative overflow-hidden">
-                        <div class="absolute top-0 right-0 bg-amber-200 text-amber-800 text-xs font-bold px-3 py-1 rounded-bl-lg">RECOMMENDED</div>
-                        <div class="text-3xl mb-4">🔒</div>
-                        <h3 class="text-xl font-bold text-stone-800 mb-2">KnowledgeLens AI Approach</h3>
-                        <ul class="space-y-3 text-stone-700 text-sm">
-                            <li class="flex items-start"><span class="mr-2 text-green-600">✔</span> <strong>100% Local:</strong> Data never leaves your browser.</li>
-                            <li class="flex items-start"><span class="mr-2 text-green-600">✔</span> <strong>Free:</strong> Uses your local CPU/GPU via Ollama.</li>
-                            <li class="flex items-start"><span class="mr-2 text-green-600">✔</span> <strong>Wasm Powered:</strong> Python runs natively in Chrome/Edge.</li>
-                        </ul>
-                    </div>
-                </div>
-            </div>
-        </section>
-
-        <!-- Section: Simulation -->
-        <section id="demo" class="w-full py-16 bg-stone-50">
-            <div class="max-w-4xl mx-auto px-4">
-                <div class="text-center mb-10">
-                    <h2 class="text-3xl font-bold text-stone-800 mb-4">Simulation: See It In Action</h2>
-                    <p class="text-stone-600">
-                        Experience how KnowledgeLens extracts entities and builds relationships. 
-                        <br><span class="text-sm italic text-stone-500">(This is a simulation. The real app runs on your data.)</span>
-                    </p>
-                </div>
-                <div class="bg-white rounded-xl shadow-lg border border-stone-200 p-6 md:p-8">
-                    <div class="flex flex-col sm:flex-row gap-4 mb-8 items-center justify-between border-b border-stone-100 pb-6">
-                        <div class="flex items-center gap-3 w-full sm:w-auto">
-                            <div class="h-10 w-10 bg-stone-100 rounded-full flex items-center justify-center text-xl">📄</div>
-                            <div class="flex-1">
-                                <p class="text-sm font-semibold text-stone-800">sample_research_paper.pdf</p>
-                                <p class="text-xs text-stone-500">Detected: Tech / AI</p>
-                            </div>
-                        </div>
-                        <button id="extractBtn" class="w-full sm:w-auto bg-amber-600 text-white px-6 py-2 rounded-lg font-medium hover:bg-amber-700 transition active:scale-95">
-                            ⚡ Run Extraction
-                        </button>
-                    </div>
-                    <div class="grid md:grid-cols-3 gap-6">
-                        <div class="col-span-1 bg-stone-900 rounded-lg p-4 font-mono text-xs text-green-400 h-64 overflow-y-auto" id="consoleLog">
-                            <span class="text-stone-500"># System Ready...</span><br>
-                            <span class="text-stone-500"># Waiting for input...</span>
-                        </div>
-                        <div class="col-span-2 flex flex-col items-center justify-center h-64 bg-stone-50 rounded-lg border border-stone-100 relative">
-                            <div class="chart-container">
-                                <canvas id="entityChart"></canvas>
-                            </div>
-                            <div id="placeholderText" class="absolute inset-0 flex items-center justify-center text-stone-400 text-sm">
-                                Waiting for extraction data...
-                            </div>
-                        </div>
-                    </div>
-                </div>
-            </div>
-        </section>
-
-        <!-- Section: Setup Guide -->
-        <section id="setup" class="w-full py-16 bg-white">
-            <div class="max-w-4xl mx-auto px-4">
-                <div class="mb-12">
-                    <h2 class="text-3xl font-bold text-stone-800 mb-4">How to Run It</h2>
-                    <p class="text-stone-600">
-                        Because this runs in your browser, you need to tell your local AI (Ollama) that it's okay to talk to a website. This is a one-time security setup.
-                    </p>
-                </div>
-                <div class="space-y-8">
-                    <!-- Step 1 -->
-                    <div class="flex gap-4">
-                        <div class="flex-shrink-0 w-8 h-8 rounded-full bg-stone-200 text-stone-600 font-bold flex items-center justify-center">1</div>
-                        <div class="flex-1 pb-8 border-b border-stone-100">
-                            <h3 class="text-xl font-bold text-stone-800 mb-2">Install Ollama</h3>
-                            <p class="text-stone-600 mb-4">Download and install Ollama for your OS, then pull a model.</p>
-                            <div class="bg-stone-900 text-stone-200 p-3 rounded-md font-mono text-sm inline-block">
-                                ollama run llama3.2
-                            </div>
-                        </div>
-                    </div>
-                    <!-- Step 2 -->
-                    <div class="flex gap-4">
-                        <div class="flex-shrink-0 w-8 h-8 rounded-full bg-amber-100 text-amber-700 font-bold flex items-center justify-center ring-2 ring-amber-200">2</div>
-                        <div class="flex-1 pb-8 border-b border-stone-100">
-                            <h3 class="text-xl font-bold text-stone-800 mb-2">Configure CORS (Crucial)</h3>
-                            <p class="text-stone-600 mb-4">By default, browsers block local connections. Enable <code>OLLAMA_ORIGINS</code>.</p>
-                            <div class="bg-stone-50 rounded-xl p-1 inline-flex mb-4 border border-stone-200">
-                                <button onclick="showOS('mac')" id="btn-mac" class="px-4 py-2 rounded-lg text-sm font-medium transition bg-white text-stone-800 shadow-sm">Mac / Linux</button>
-                                <button onclick="showOS('win')" id="btn-win" class="px-4 py-2 rounded-lg text-sm font-medium transition text-stone-500 hover:text-stone-800">Windows</button>
-                            </div>
-                            <div id="content-mac" class="bg-amber-50 border border-amber-100 p-4 rounded-lg fade-in">
-                                <p class="text-sm text-stone-700 mb-2">Stop Ollama, then run this command in your terminal:</p>
-                                <div class="bg-stone-900 text-green-400 p-3 rounded-md font-mono text-sm overflow-x-auto">
-                                    OLLAMA_ORIGINS="*" ollama serve
-                                </div>
-                            </div>
-                            <div id="content-win" class="hidden bg-blue-50 border border-blue-100 p-4 rounded-lg fade-in">
-                                <ol class="list-decimal list-inside text-sm text-stone-700 space-y-2">
-                                    <li>Quit Ollama from the taskbar.</li>
-                                    <li>Open <strong>Environment Variables</strong> in Control Panel.</li>
-                                    <li>Add User Variable: <code>OLLAMA_ORIGINS</code> value <code>*</code></li>
-                                    <li>Restart Ollama.</li>
-                                </ol>
-                            </div>
-                        </div>
-                    </div>
-                    <!-- Step 3 -->
-                    <div class="flex gap-4">
-                        <div class="flex-shrink-0 w-8 h-8 rounded-full bg-stone-200 text-stone-600 font-bold flex items-center justify-center">3</div>
-                        <div class="flex-1">
-                            <h3 class="text-xl font-bold text-stone-800 mb-2">Launch</h3>
-                            <p class="text-stone-600 mb-4">
-                                Click the button below to initialize the Pyodide environment.
-                            </p>
-                            <button onclick="launchApp()" class="bg-amber-600 text-white px-6 py-2 rounded-lg font-medium hover:bg-amber-700 transition">
-                                Launch KnowledgeLens App
-                            </button>
-                        </div>
-                    </div>
-                </div>
-            </div>
-        </section>
-
-        <!-- Footer -->
-        <footer class="bg-stone-900 text-stone-400 py-12 text-center mt-auto">
-            <div class="max-w-4xl mx-auto px-4">
-                <h4 class="text-stone-200 font-bold text-lg mb-4">KnowledgeLens AI</h4>
-                <div class="flex justify-center gap-4 mb-8 text-sm">
-                    <span>Built with Stlite</span>
-                    <span>•</span>
-                    <span>Powered by Ollama</span>
-                    <span>•</span>
-                    <span>Visualized with PyVis</span>
-                </div>
-                <p class="text-xs text-stone-600">
-                    &copy; 2025 KnowledgeLens Project. Distributed under MIT License.
+    <!-- Section: Why KnowledgeLens? (Interactive Comparison) -->
+    <section id="features" class="w-full bg-white py-16 border-y border-stone-100">
+        <div class="max-w-5xl mx-auto px-4">
+            <div class="mb-12 text-center">
+                <h2 class="text-3xl font-bold text-stone-800 mb-4">Why Browser-Based?</h2>
+                <p class="text-stone-600 max-w-2xl mx-auto">
+                    Traditional apps send your data to the cloud. KnowledgeLens AI changes the paradigm by bringing the processing to you.
                 </p>
             </div>
-        </footer>
-    </div>
 
-    <!-- ========================================== -->
-    <!-- APP CONTAINER (STLITE) -->
-    <!-- ========================================== -->
-    <div id="stlite-root"></div>
+            <div class="grid md:grid-cols-2 gap-8">
+                <!-- Card 1: The Problem -->
+                <div class="p-8 rounded-2xl bg-stone-50 border border-stone-100 hover:shadow-lg transition duration-300">
+                    <div class="text-3xl mb-4">☁️</div>
+                    <h3 class="text-xl font-bold text-stone-800 mb-2">Traditional Architecture</h3>
+                    <ul class="space-y-3 text-stone-600 text-sm">
+                        <li class="flex items-start"><span class="mr-2 text-red-500">✖</span> uploads documents to external servers.</li>
+                        <li class="flex items-start"><span class="mr-2 text-red-500">✖</span> Requires expensive API keys.</li>
+                        <li class="flex items-start"><span class="mr-2 text-red-500">✖</span> Slow processing due to network latency.</li>
+                    </ul>
+                </div>
 
-    <!-- ========================================== -->
-    <!-- SCRIPTS -->
-    <!-- ========================================== -->
-    <script src="https://cdn.jsdelivr.net/npm/@stlite/mountable@0.53.0/build/stlite.js"></script>
-    
+                <!-- Card 2: The Solution -->
+                <div class="p-8 rounded-2xl bg-amber-50 border border-amber-100 ring-1 ring-amber-200 shadow-sm relative overflow-hidden">
+                    <div class="absolute top-0 right-0 bg-amber-200 text-amber-800 text-xs font-bold px-3 py-1 rounded-bl-lg">RECOMMENDED</div>
+                    <div class="text-3xl mb-4">🔒</div>
+                    <h3 class="text-xl font-bold text-stone-800 mb-2">KnowledgeLens AI Approach</h3>
+                    <ul class="space-y-3 text-stone-700 text-sm">
+                        <li class="flex items-start"><span class="mr-2 text-green-600">✔</span> <strong>100% Local:</strong> Data never leaves your browser.</li>
+                        <li class="flex items-start"><span class="mr-2 text-green-600">✔</span> <strong>Free:</strong> Uses your local CPU/GPU via Ollama.</li>
+                        <li class="flex items-start"><span class="mr-2 text-green-600">✔</span> <strong>Wasm Powered:</strong> Python runs natively in Chrome/Edge.</li>
+                    </ul>
+                </div>
+            </div>
+
+            <!-- Feature Grid -->
+            <div class="mt-16 grid grid-cols-2 md:grid-cols-4 gap-4 text-center">
+                <div class="p-4">
+                    <div class="text-2xl mb-2">📄</div>
+                    <h4 class="font-bold text-stone-800">Versatile</h4>
+                    <p class="text-xs text-stone-500 mt-1">PDF, TXT, MD, Code</p>
+                </div>
+                <div class="p-4">
+                    <div class="text-2xl mb-2">🗺️</div>
+                    <h4 class="font-bold text-stone-800">Visual</h4>
+                    <p class="text-xs text-stone-500 mt-1">Interactive Graphs</p>
+                </div>
+                <div class="p-4">
+                    <div class="text-2xl mb-2">💾</div>
+                    <h4 class="font-bold text-stone-800">Persistent</h4>
+                    <p class="text-xs text-stone-500 mt-1">Save & Load State</p>
+                </div>
+                <div class="p-4">
+                    <div class="text-2xl mb-2">💬</div>
+                    <h4 class="font-bold text-stone-800">RAG Chat</h4>
+                    <p class="text-xs text-stone-500 mt-1">Contextual Answers</p>
+                </div>
+            </div>
+        </div>
+    </section>
+
+    <!-- Section: Simulation Demo (Interactive) -->
+    <section id="demo" class="w-full py-16 bg-stone-50">
+        <div class="max-w-4xl mx-auto px-4">
+            <div class="text-center mb-10">
+                <h2 class="text-3xl font-bold text-stone-800 mb-4">Simulation: See It In Action</h2>
+                <p class="text-stone-600">
+                    Experience how KnowledgeLens extracts entities and builds relationships. 
+                    <br><span class="text-sm italic text-stone-500">(This is a simulation. The real app runs on your data.)</span>
+                </p>
+            </div>
+
+            <div class="bg-white rounded-xl shadow-lg border border-stone-200 p-6 md:p-8">
+                <!-- Controls -->
+                <div class="flex flex-col sm:flex-row gap-4 mb-8 items-center justify-between border-b border-stone-100 pb-6">
+                    <div class="flex items-center gap-3 w-full sm:w-auto">
+                        <div class="h-10 w-10 bg-stone-100 rounded-full flex items-center justify-center text-xl">📄</div>
+                        <div class="flex-1">
+                            <p class="text-sm font-semibold text-stone-800">sample_research_paper.pdf</p>
+                            <p class="text-xs text-stone-500">Detected: Tech / AI</p>
+                        </div>
+                    </div>
+                    <button id="extractBtn" class="w-full sm:w-auto bg-amber-600 text-white px-6 py-2 rounded-lg font-medium hover:bg-amber-700 transition active:scale-95">
+                        ⚡ Run Extraction
+                    </button>
+                </div>
+
+                <!-- Simulation Area -->
+                <div class="grid md:grid-cols-3 gap-6">
+                    <!-- Text Log -->
+                    <div class="col-span-1 bg-stone-900 rounded-lg p-4 font-mono text-xs text-green-400 h-64 overflow-y-auto" id="consoleLog">
+                        <span class="text-stone-500"># System Ready...</span><br>
+                        <span class="text-stone-500"># Waiting for input...</span>
+                    </div>
+
+                    <!-- Chart Container -->
+                    <div class="col-span-2 flex flex-col items-center justify-center h-64 bg-stone-50 rounded-lg border border-stone-100 relative">
+                        <div class="chart-container">
+                            <canvas id="entityChart"></canvas>
+                        </div>
+                        <div id="placeholderText" class="absolute inset-0 flex items-center justify-center text-stone-400 text-sm">
+                            Waiting for extraction data...
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </section>
+
+    <!-- Section: The Setup Guide (Critical for User Success) -->
+    <section id="setup" class="w-full py-16 bg-white">
+        <div class="max-w-4xl mx-auto px-4">
+            <div class="mb-12">
+                <h2 class="text-3xl font-bold text-stone-800 mb-4">How to Run It</h2>
+                <p class="text-stone-600">
+                    Because this runs in your browser, you need to tell your local AI (Ollama) that it's okay to talk to a website. This is a one-time security setup.
+                </p>
+            </div>
+
+            <!-- Steps Container -->
+            <div class="space-y-8">
+                
+                <!-- Step 1 -->
+                <div class="flex gap-4">
+                    <div class="flex-shrink-0 w-8 h-8 rounded-full bg-stone-200 text-stone-600 font-bold flex items-center justify-center">1</div>
+                    <div class="flex-1 pb-8 border-b border-stone-100">
+                        <h3 class="text-xl font-bold text-stone-800 mb-2">Install Ollama</h3>
+                        <p class="text-stone-600 mb-4">Download and install Ollama for your OS, then pull a model.</p>
+                        <div class="bg-stone-900 text-stone-200 p-3 rounded-md font-mono text-sm inline-block">
+                            ollama run llama3.2
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Step 2 (Interactive) -->
+                <div class="flex gap-4">
+                    <div class="flex-shrink-0 w-8 h-8 rounded-full bg-amber-100 text-amber-700 font-bold flex items-center justify-center ring-2 ring-amber-200">2</div>
+                    <div class="flex-1 pb-8 border-b border-stone-100">
+                        <h3 class="text-xl font-bold text-stone-800 mb-2">Configure CORS (Crucial)</h3>
+                        <p class="text-stone-600 mb-4">By default, browsers block local connections. Enable <code>OLLAMA_ORIGINS</code>.</p>
+                        
+                        <!-- OS Toggles -->
+                        <div class="bg-stone-50 rounded-xl p-1 inline-flex mb-4 border border-stone-200">
+                            <button onclick="showOS('mac')" id="btn-mac" class="px-4 py-2 rounded-lg text-sm font-medium transition bg-white text-stone-800 shadow-sm">Mac / Linux</button>
+                            <button onclick="showOS('win')" id="btn-win" class="px-4 py-2 rounded-lg text-sm font-medium transition text-stone-500 hover:text-stone-800">Windows</button>
+                        </div>
+
+                        <!-- Mac Content -->
+                        <div id="content-mac" class="bg-amber-50 border border-amber-100 p-4 rounded-lg fade-in">
+                            <p class="text-sm text-stone-700 mb-2">Stop Ollama, then run this command in your terminal:</p>
+                            <div class="bg-stone-900 text-green-400 p-3 rounded-md font-mono text-sm overflow-x-auto">
+                                OLLAMA_ORIGINS="*" ollama serve
+                            </div>
+                        </div>
+
+                        <!-- Windows Content -->
+                        <div id="content-win" class="hidden bg-blue-50 border border-blue-100 p-4 rounded-lg fade-in">
+                            <ol class="list-decimal list-inside text-sm text-stone-700 space-y-2">
+                                <li>Quit Ollama from the taskbar.</li>
+                                <li>Open <strong>Environment Variables</strong> in Control Panel.</li>
+                                <li>Add User Variable: <code>OLLAMA_ORIGINS</code> value <code>*</code></li>
+                                <li>Restart Ollama.</li>
+                            </ol>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Step 3 -->
+                <div class="flex gap-4">
+                    <div class="flex-shrink-0 w-8 h-8 rounded-full bg-stone-200 text-stone-600 font-bold flex items-center justify-center">3</div>
+                    <div class="flex-1">
+                        <h3 class="text-xl font-bold text-stone-800 mb-2">Open & Build</h3>
+                        <p class="text-stone-600 mb-4">
+                            Go to <a href="https://varun-sv.github.io/KnowledgeLens-AI/" target="_blank" class="text-amber-600 underline decoration-amber-300 underline-offset-2 hover:text-amber-700">the website</a>. It will auto-connect to your localhost.
+                        </p>
+                    </div>
+                </div>
+
+            </div>
+        </div>
+    </section>
+
+    <!-- Footer -->
+    <footer class="bg-stone-900 text-stone-400 py-12 text-center mt-auto">
+        <div class="max-w-4xl mx-auto px-4">
+            <h4 class="text-stone-200 font-bold text-lg mb-4">KnowledgeLens AI</h4>
+            <div class="flex justify-center gap-4 mb-8 text-sm">
+                <span>Built with Stlite</span>
+                <span>•</span>
+                <span>Powered by Ollama</span>
+                <span>•</span>
+                <span>Visualized with PyVis</span>
+            </div>
+            <p class="text-xs text-stone-600">
+                &copy; 2025 KnowledgeLens Project. Distributed under MIT License.
+            </p>
+        </div>
+    </footer>
+
+    <!-- Logic -->
     <script>
-        // --- LOGIC: Landing Page Interactions ---
+        // --- Setup Guide Logic (Tab Switching) ---
         function showOS(os) {
             const macContent = document.getElementById('content-mac');
             const winContent = document.getElementById('content-win');
@@ -292,6 +336,7 @@
             }
         }
 
+        // --- Simulation Logic (Chart.js + Console) ---
         const extractBtn = document.getElementById('extractBtn');
         const consoleLog = document.getElementById('consoleLog');
         const placeholder = document.getElementById('placeholderText');
@@ -309,26 +354,59 @@
 
         const initChart = () => {
             const ctx = document.getElementById('entityChart').getContext('2d');
+            
+            // Data simulating extracted entities
             const data = {
                 labels: ['Machine Learning', 'Neural Networks', 'Ollama', 'Graph Theory', 'Data Privacy'],
                 datasets: [{
                     label: 'Relevance Score',
-                    data: [0, 0, 0, 0, 0],
-                    backgroundColor: ['rgba(217, 119, 6, 0.7)','rgba(217, 119, 6, 0.5)','rgba(87, 83, 78, 0.7)','rgba(87, 83, 78, 0.5)','rgba(217, 119, 6, 0.3)'],
+                    data: [0, 0, 0, 0, 0], // Start at 0 for animation
+                    backgroundColor: [
+                        'rgba(217, 119, 6, 0.7)',
+                        'rgba(217, 119, 6, 0.5)',
+                        'rgba(87, 83, 78, 0.7)',
+                        'rgba(87, 83, 78, 0.5)',
+                        'rgba(217, 119, 6, 0.3)'
+                    ],
                     borderColor: 'rgba(217, 119, 6, 1)',
                     borderWidth: 1,
                     borderRadius: 4
                 }]
             };
+
             const config = {
-                type: 'bar', data: data,
+                type: 'bar',
+                data: data,
                 options: {
-                    responsive: true, maintainAspectRatio: false,
-                    plugins: { legend: { display: false }, tooltip: { callbacks: { label: function(c) { return `Relevance: ${c.raw}%`; } } } },
-                    scales: { y: { beginAtZero: true, max: 100, grid: { display: false } }, x: { grid: { display: false } } },
-                    animation: { duration: 1500, easing: 'easeOutQuart' }
+                    responsive: true,
+                    maintainAspectRatio: false,
+                    plugins: {
+                        legend: { display: false },
+                        tooltip: {
+                            callbacks: {
+                                label: function(context) {
+                                    return `Relevance: ${context.raw}%`;
+                                }
+                            }
+                        }
+                    },
+                    scales: {
+                        y: {
+                            beginAtZero: true,
+                            max: 100,
+                            grid: { display: false }
+                        },
+                        x: {
+                            grid: { display: false }
+                        }
+                    },
+                    animation: {
+                        duration: 1500,
+                        easing: 'easeOutQuart'
+                    }
                 }
             };
+
             chartInstance = new Chart(ctx, config);
         };
 
@@ -338,14 +416,22 @@
             extractBtn.textContent = "Processing...";
             extractBtn.classList.add("opacity-50");
             placeholder.style.display = 'none';
+
+            // Clear log
             consoleLog.innerHTML = '<span class="text-stone-500"># Starting extraction...</span>';
+
+            // Simulate process
             logMessage("Reading PDF stream...", 500);
             logMessage("Chunking text (2500 chars)...", 1200);
             logMessage("Connecting to Local LLM...", 2000);
             logMessage("Extracting Entities...", 2800);
             logMessage("Building Graph Relations...", 3500);
             logMessage("Success! Graph Ready.", 4200);
+
+            // Initialize chart if first time
             if (!chartInstance) initChart();
+
+            // Animate Chart Data after delay
             setTimeout(() => {
                 chartInstance.data.datasets[0].data = [95, 82, 75, 60, 45];
                 chartInstance.update();
@@ -355,421 +441,6 @@
             }, 3000);
         });
 
-        // --- LOGIC: App Launch & Stlite Mounting ---
-        let appMounted = false;
-
-        function launchApp() {
-            // UI Transition
-            document.getElementById('landing-page').classList.add('hidden-section');
-            const root = document.getElementById('stlite-root');
-            root.style.display = 'block';
-
-            if (!appMounted) {
-                appMounted = true;
-                mountStlite();
-            }
-        }
-
-        function mountStlite() {
-            stlite.mount({
-                requirements: ["streamlit", "networkx", "pypdf", "pyvis", "requests"],
-                entrypoint: "streamlit_app.py",
-                files: {
-                    "streamlit_app.py": `
-import io
-import json
-import tempfile
-from typing import List, Tuple, Optional, Dict, Any
-
-import networkx as nx
-import requests
-import streamlit as st
-import streamlit.components.v1 as components
-from pypdf import PdfReader
-from pyvis.network import Network
-
-# ---------------------------------------------------------
-# Utility functions
-# ---------------------------------------------------------
-
-def extract_text_from_file(uploaded_file) -> str:
-    """Extract text from uploaded file. Supports PDF via pypdf."""
-    try:
-        file_name = uploaded_file.name.lower()
-        uploaded_file.seek(0)
-        
-        if file_name.endswith(".pdf"):
-            reader = PdfReader(uploaded_file)
-            pages_text = []
-            for page in reader.pages:
-                try:
-                    text = page.extract_text() or ""
-                except Exception:
-                    text = ""
-                pages_text.append(text)
-            return "\\n".join(pages_text)
-            
-        else:
-            content = uploaded_file.read()
-            try:
-                return content.decode("utf-8")
-            except UnicodeDecodeError:
-                return content.decode("latin-1")
-                
-    except Exception as e:
-        return f"Error reading file: {str(e)}"
-
-def chunk_text(text: str, max_chars: int = 2500) -> List[str]:
-    """Smart chunking."""
-    text = text.replace("\\r", " ")
-    paragraphs = [p.strip() for p in text.split("\\n\\n") if p.strip()]
-    
-    chunks = []
-    current_chunk = ""
-    
-    for para in paragraphs:
-        if len(current_chunk) + len(para) < max_chars:
-            current_chunk += para + "\\n\\n"
-        else:
-            if current_chunk:
-                chunks.append(current_chunk.strip())
-            current_chunk = para + "\\n\\n"
-    
-    if current_chunk:
-        chunks.append(current_chunk.strip())
-    
-    return chunks if chunks else [text[:max_chars]]
-
-def call_llm_api(base_url, api_key, model, system_prompt, user_prompt, temperature=0.1):
-    """Call an OpenAI-compatible /v1/chat/completions endpoint."""
-    url = base_url.rstrip("/") + "/v1/chat/completions"
-    headers = { "Content-Type": "application/json" }
-    if api_key: headers["Authorization"] = f"Bearer {api_key}"
-
-    payload = {
-        "model": model,
-        "temperature": temperature,
-        "stream": False,
-        "messages": [
-            {"role": "system", "content": system_prompt},
-            {"role": "user", "content": user_prompt},
-        ],
-    }
-
-    try:
-        resp = requests.post(url, headers=headers, json=payload, timeout=180)
-        resp.raise_for_status()
-    except Exception as e:
-        raise RuntimeError(f"Error calling LLM. Ensure Ollama is running with OLLAMA_ORIGINS='*' set. Details: {e}") from e
-
-    data = resp.json()
-    try:
-        return data["choices"][0]["message"]["content"]
-    except Exception:
-        raise RuntimeError(f"Unexpected LLM response format: {data}")
-
-def extract_master_concept(base_url, api_key, model, all_texts, temperature=0.1):
-    """Ask LLM to identify the core concept."""
-    combined_preview = ""
-    for doc_name, text in all_texts:
-        preview = text[:1500].strip()
-        combined_preview += f"\\n\\n--- Document: {doc_name} ---\\n{preview}"
-    combined_preview = combined_preview[:6000]
-    
-    system_prompt = "You are an expert at analyzing documents. Respond with ONLY a short phrase (2-4 words) that captures the main topic."
-    user_prompt = f"Analyze these document excerpts and identify the ONE main topic:\\n{combined_preview}\\n\\nWhat is the central concept? Respond with ONLY 2-4 words:"
-    
-    try:
-        response = call_llm_api(base_url, api_key, model, system_prompt, user_prompt, temperature)
-        concept = response.strip().strip('"').strip("'").split("\\n")[0].strip()
-        for prefix in ["The central concept is", "Main topic:", "Answer:"]:
-            if concept.startswith(prefix): concept = concept[len(prefix):].strip()
-        
-        if len(concept) > 50 or len(concept) < 2:
-            first_text = all_texts[0][1]
-            words = first_text.split()[:5]
-            concept = " ".join(words)
-        return concept.strip().title() if concept else "Knowledge Base"
-        
-    except Exception as e:
-        st.warning(f"Could not detect master concept: {e}. Using fallback.")
-        return "Knowledge Base"
-
-def normalize_entity(raw):
-    """Normalize an entity label."""
-    if not raw: return None
-    txt = str(raw).strip()
-    if not txt: return None
-    display = " ".join(txt.split())
-    if len(display) < 2: return None
-    stopwords = {"the", "a", "an", "and", "or", "but", "in", "on", "at", "to", "for"}
-    if display.lower() in stopwords: return None
-    return display.lower(), display
-
-def parse_triples_with_direction(text):
-    """Parse directed triples from LLM output."""
-    triples = []
-    for line in text.split("\\n"):
-        line = line.strip().lstrip("0123456789.-•*# ").strip()
-        if "|" not in line: continue
-        parts = [p.strip() for p in line.split("|")]
-        if len(parts) != 3: continue
-        s, r, o = parts
-        norm_s = normalize_entity(s)
-        norm_o = normalize_entity(o)
-        norm_r = normalize_entity(r)
-        if not (norm_s and norm_r and norm_o): continue
-        triples.append((norm_s[1], norm_r[1], norm_o[1]))
-    return triples
-
-def get_or_create_node(G, label, node_type="entity"):
-    norm = normalize_entity(label)
-    if not norm: return None
-    canonical, display = norm
-    node_map = st.session_state.get("node_canonical_map", {})
-    if canonical in node_map: return node_map[canonical]
-    else:
-        G.add_node(display, label=display, type=node_type)
-        node_map[canonical] = display
-        st.session_state["node_canonical_map"] = node_map
-        return display
-
-def add_triples_to_graph(G, triples, source_label):
-    added_count = 0
-    for raw_s, raw_r, raw_o in triples:
-        s = get_or_create_node(G, raw_s, "entity")
-        o = get_or_create_node(G, raw_o, "entity")
-        r = raw_r.strip()
-        if not (s and o and r): continue
-        if not G.has_edge(s, o): G.add_edge(s, o, relations=[], sources=set())
-        edge_data = G[s][o]
-        if r not in edge_data["relations"]: edge_data["relations"].append(r)
-        edge_data["sources"].add(source_label)
-        added_count += 1
-    return added_count
-
-def connect_to_master(G, master_node, threshold_percentile, base_url, api_key, model, temperature):
-    if master_node not in G: return
-    entity_nodes = [n for n in G.nodes() if G.nodes[n].get("type") != "master"]
-    if not entity_nodes: return
-    degrees = {node: G.degree(node) for node in entity_nodes}
-    if not degrees: return
-    sorted_nodes = sorted(degrees.items(), key=lambda x: x[1], reverse=True)
-    num_to_connect = min(max(1, int(len(sorted_nodes) * threshold_percentile / 100)), 20)
-    nodes_to_process = [n for n, d in sorted_nodes[:num_to_connect] if not G.has_edge(master_node, n)]
-    
-    if not nodes_to_process: return
-
-    system_prompt = "You are a knowledge graph expert. Define specific 1-3 word relationship verbs."
-    user_prompt = f"Master Concept: '{master_node}'. Sub-Concepts: {', '.join(nodes_to_process)}. Output: 'Sub-Concept | Relationship'"
-
-    try:
-        response = call_llm_api(base_url, api_key, model, system_prompt, user_prompt, temperature)
-        rel_map = {}
-        for line in response.split('\\n'):
-            if '|' in line:
-                parts = line.split('|')
-                if len(parts) >= 2: rel_map[parts[0].strip().lower()] = parts[1].strip()
-        
-        for node in nodes_to_process:
-            relation = rel_map.get(node.lower(), "relates to")
-            G.add_edge(master_node, node, relations=[relation], sources=set())
-    except Exception:
-        for node in nodes_to_process:
-            G.add_edge(master_node, node, relations=["relates to"], sources=set())
-
-def visualize_pyvis_graph(G, height="750px"):
-    if len(G.nodes) == 0:
-        st.warning("Graph is empty.")
-        return
-
-    net = Network(height=height, width="100%", bgcolor="#0E1117", font_color="white", directed=True)
-    degrees = dict(G.degree())
-    max_val = max(degrees.values()) if degrees else 0
-    max_degree = max_val if max_val > 0 else 1
-    
-    for node in G.nodes():
-        node_type = G.nodes[node].get("type", "entity")
-        degree = degrees.get(node, 0)
-        size = 15 + (20 * (degree / max_degree))
-        title = f"{node}\\nLinks: {degree}"
-        
-        if node_type == "master":
-            net.add_node(node, label=node, title=title, color="#FF6B9D", shape="star", size=40, font={"size": 24, "face": "arial", "color": "white"})
-        else:
-            intensity = int(100 + (155 * (degree / max_degree)))
-            color = f"#00{intensity:02x}{intensity:02x}"
-            net.add_node(node, label=node, title=title, color=color, shape="dot", size=size, font={"size": 14, "face": "arial", "color": "white"})
-
-    for u, v, data in G.edges(data=True):
-        relations = data.get("relations", ["related"])
-        label = relations[0] if relations else ""
-        if len(label) > 15: label = label[:12] + "..."
-        net.add_edge(u, v, title=f"Relation: {', '.join(relations)}", label=label, color="rgba(150, 150, 150, 0.5)", arrows="to")
-
-    options = {
-        "nodes": { "font": { "strokeWidth": 0, "strokeColor": "#ffffff" } },
-        "edges": { "color": { "inherit": False, "opacity": 0.5 }, "smooth": { "type": "continuous" } },
-        "physics": { "forceAtlas2Based": { "gravitationalConstant": -100, "centralGravity": 0.005, "springLength": 250, "springConstant": 0.05 }, "solver": "forceAtlas2Based", "stabilization": { "enabled": True } },
-        "interaction": { "hover": True, "multiselect": True, "navigationButtons": True, "zoomView": True }
-    }
-    net.set_options(json.dumps(options))
-
-    try:
-        with tempfile.NamedTemporaryFile(delete=False, suffix=".html") as tmp:
-            net.save_graph(tmp.name)
-            with open(tmp.name, "r", encoding="utf-8") as f: html_content = f.read()
-        components.html(html_content, height=800, scrolling=False)
-    except Exception as e:
-        st.error(f"Error visualizing graph: {e}")
-
-def retrieve_graph_context(G, query, max_tokens=3000):
-    query_lower = query.lower()
-    relevant_nodes = [n for n in G.nodes() if str(n).lower() in query_lower]
-    if not relevant_nodes:
-        master = [n for n in G.nodes if G.nodes[n].get("type") == "master"]
-        if master: relevant_nodes = master
-    
-    if not relevant_nodes: return "No specific graph connections found."
-    
-    context_lines = []
-    seen = set()
-    for node in relevant_nodes:
-        for _, neighbor, data in G.out_edges(node, data=True):
-            if (node, neighbor) not in seen:
-                context_lines.append(f"{node} --[{', '.join(data.get('relations',[]))}]--> {neighbor}")
-                seen.add((node, neighbor))
-        for neighbor, _, data in G.in_edges(node, data=True):
-            if (neighbor, node) not in seen:
-                context_lines.append(f"{neighbor} --[{', '.join(data.get('relations',[]))}]--> {node}")
-                seen.add((neighbor, node))
-                
-    return "\\n".join(context_lines)[:max_tokens]
-
-# ---------------------------------------------------------
-# Streamlit App
-# ---------------------------------------------------------
-st.set_page_config(page_title="AI Knowledge Graph (Wasm)", layout="wide")
-st.title("🧠 AI Knowledge Graph Builder")
-st.markdown("Host: **GitHub Pages** | Engine: **Browser** | LLM: **Localhost**")
-
-if "kg_graph" not in st.session_state: st.session_state.kg_graph = nx.DiGraph()
-if "node_canonical_map" not in st.session_state: st.session_state.node_canonical_map = {}
-if "master_concept" not in st.session_state: st.session_state.master_concept = None
-if "processing_complete" not in st.session_state: st.session_state.processing_complete = False
-if "chat_history" not in st.session_state: st.session_state.chat_history = []
-
-with st.sidebar:
-    st.header("🔧 LLM Configuration")
-    st.error("⚠️ REQUIRED: You must set OLLAMA_ORIGINS='*' environment variable on your local machine for this to work!")
-    base_url = st.text_input("Base URL", value="http://localhost:11434")
-    api_key = st.text_input("API Key (Optional)", type="password")
-    model_name = st.text_input("Model", value="llama3.2")
-    temperature = st.slider("Temperature", 0.0, 1.0, 0.1)
-    st.markdown("---")
-    st.header("⚙️ Graph Settings")
-    auto_detect = st.checkbox("Auto-detect master concept", value=True)
-    manual_master = st.text_input("Or set manually:", disabled=auto_detect)
-    connection_pct = st.slider("Master connections (%)", 50, 95, 70)
-    custom_extraction_prompt = st.text_area("Custom Extraction Focus (Optional)")
-    st.markdown("---")
-    uploaded_graph_state = st.file_uploader("Load Graph State (JSON)", type="json")
-    if uploaded_graph_state:
-        try:
-            state_data = json.load(uploaded_graph_state)
-            G_loaded = nx.node_link_graph(state_data["graph_data"])
-            for u, v, data in G_loaded.edges(data=True):
-                if "sources" in data and isinstance(data["sources"], list): data["sources"] = set(data["sources"])
-            st.session_state.kg_graph = G_loaded
-            st.session_state.master_concept = state_data.get("master_concept")
-            st.session_state.processing_complete = True
-            st.success(f"✅ Loaded graph with {len(G_loaded.nodes)} nodes")
-        except Exception as e: st.error(f"Error loading graph: {e}")
-    if st.button("🗑️ Clear All", use_container_width=True):
-        st.session_state.kg_graph = nx.DiGraph()
-        st.session_state.node_canonical_map = {}
-        st.session_state.master_concept = None
-        st.session_state.processing_complete = False
-        st.session_state.chat_history = []
-        st.rerun()
-
-uploaded_files = st.file_uploader("📄 Upload Documents", type=["pdf", "txt", "md", "json"], accept_multiple_files=True)
-
-if st.button("🚀 Build Graph", type="primary", use_container_width=True):
-    if not uploaded_files: st.error("Please upload a file"); st.stop()
-    st.session_state.processing_complete = False
-    all_texts = []
-    with st.spinner("📖 Reading files..."):
-        for f in uploaded_files:
-            text = extract_text_from_file(f)
-            if text.strip(): all_texts.append((f.name, text))
-    
-    if not all_texts: st.error("No text extracted"); st.stop()
-    
-    master_concept = None
-    if auto_detect:
-        with st.spinner("🎯 Detecting central concept..."):
-            master_concept = extract_master_concept(base_url, api_key, model_name, all_texts, temperature)
-    else: master_concept = manual_master.strip() or "Knowledge Base"
-    
-    st.session_state.master_concept = master_concept
-    G = nx.DiGraph()
-    G.add_node(master_concept, label=master_concept, type="master")
-    st.session_state.node_canonical_map = {}
-    
-    all_chunks = []
-    for doc_name, text in all_texts:
-        for chunk in chunk_text(text): all_chunks.append((doc_name, chunk))
-    
-    st.info(f"📦 Processing {len(all_chunks)} chunks...")
-    sys_prompt = "Format: SUBJECT | RELATIONSHIP | OBJECT"
-    if custom_extraction_prompt: sys_prompt += f"\\nFOCUS: {custom_extraction_prompt}"
-    
-    progress = st.progress(0)
-    total_triples = 0
-    for idx, (doc_name, chunk) in enumerate(all_chunks, 1):
-        try:
-            out = call_llm_api(base_url, api_key, model_name, sys_prompt, f"Extract triples:\\n{chunk}", temperature)
-            triples = parse_triples_with_direction(out)
-            if triples: total_triples += add_triples_to_graph(G, triples, doc_name)
-        except Exception: pass
-        progress.progress(idx / len(all_chunks))
-    
-    if len(G.nodes) > 1:
-        connect_to_master(G, master_concept, connection_pct, base_url, api_key, model_name, temperature)
-    
-    st.session_state.kg_graph = G
-    st.session_state.processing_complete = True
-    st.rerun()
-
-if st.session_state.processing_complete or len(st.session_state.kg_graph.nodes) > 0:
-    st.markdown("---")
-    G = st.session_state.kg_graph
-    c1, c2, c3 = st.columns(3)
-    c1.metric("Master", st.session_state.master_concept); c2.metric("Concepts", len(G.nodes)-1); c3.metric("Links", len(G.edges))
-    visualize_pyvis_graph(G)
-    
-    # Export Buttons Logic (Simplified)
-    export_data = {"master": st.session_state.master_concept, "nodes": len(G.nodes), "edges": len(G.edges)}
-    st.download_button("⬇️ Data (JSON)", json.dumps(export_data), "graph.json", "application/json")
-    
-    st.markdown("---")
-    st.subheader("💬 Chat")
-    user_query = st.chat_input("Ask about the graph...")
-    if user_query:
-        st.session_state.chat_history.append({"role": "user", "content": user_query})
-        context = retrieve_graph_context(G, user_query)
-        try:
-            ans = call_llm_api(base_url, api_key, model_name, "Answer using context.", f"Context: {context}\\nQ: {user_query}")
-            st.session_state.chat_history.append({"role": "assistant", "content": ans})
-        except Exception as e: st.error(str(e))
-    
-    for msg in st.session_state.chat_history:
-        st.chat_message(msg["role"]).write(msg["content"])
-                    `
-                }
-            });
-        }
     </script>
 </body>
 </html>
