@@ -391,7 +391,10 @@ def visualize_pyvis_graph(G: nx.DiGraph, height: str = "750px"):
     
     # 2. Convert NetworkX to PyVis
     degrees = dict(G.degree())
-    max_degree = max(degrees.values()) if degrees else 1
+    
+    # BUGFIX: Handle case where degrees is not empty but max degree is 0 (nodes but no edges)
+    max_val = max(degrees.values()) if degrees else 0
+    max_degree = max_val if max_val > 0 else 1
     
     for node in G.nodes():
         node_type = G.nodes[node].get("type", "entity")
