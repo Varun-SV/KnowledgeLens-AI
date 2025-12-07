@@ -1,0 +1,968 @@
+<!DOCTYPE html>
+<html>
+  <head>
+    <meta charset="UTF-8" />
+    <meta http-equiv="X-UA-Compatible" content="IE=edge" />
+    <meta name="viewport" content="width=device-width, initial-scale=1, shrink-to-fit=no" />
+    <title>AI Knowledge Graph (Browser-Based)</title>
+    <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/@stlite/mountable@0.53.0/build/stlite.css" />
+    <style>
+      /* Ensure full screen height */
+      html, body, #root { height: 100%; margin: 0; }
+      /* Hide the loading spinner after load if needed */
+      .stApp { background-color: #0E1117; }
+    </style>
+  </head>
+  <body>
+    <div id="root"></div>
+    <script src="https://cdn.jsdelivr.net/npm/@stlite/mountable@0.53.0/build/stlite.js"></script>
+    <script>
+      stlite.mount({
+        requirements: ["streamlit", "networkx", "pypdf", "pyvis", "requests"],
+        entrypoint: "streamlit_app.py",
+        files: {
+          "streamlit_app.py": `
+import io
+import json
+import tempfile
+from typing import List, Tuple, Optional, Dict, Any
+
+import networkx as nx
+import requests
+import streamlit as st
+import streamlit.components.v1 as components
+from pypdf import PdfReader
+from pyvis.network import Network
+
+# ---------------------------------------------------------
+# Utility functions
+# ---------------------------------------------------------
+
+def extract_text_from_file(uploaded_file) -> str:
+    """
+    Extract text from uploaded file.
+    Supports PDF via pypdf, and text/code/xml via simple decoding.
+    """
+    try:
+        file_name = uploaded_file.name.lower()
+        # In stlite (browser), we interact with the file object directly
+        uploaded_file.seek(0)
+        
+        if file_name.endswith(".pdf"):
+            reader = PdfReader(uploaded_file)
+            pages_text = []
+            for page in reader.pages:
+                try:
+                    text = page.extract_text() or ""
+                except Exception:
+                    text = ""
+                pages_text.append(text)
+            return "\\n".join(pages_text)
+            
+        else:
+            # Attempt to read as text (UTF-8 or Latin-1)
+            content = uploaded_file.read()
+            try:
+                return content.decode("utf-8")
+            except UnicodeDecodeError:
+                # Fallback for older encodings
+                return content.decode("latin-1")
+                
+    except Exception as e:
+        return f"Error reading file: {str(e)}"
+
+def chunk_text(text: str, max_chars: int = 2500) -> List[str]:
+    """Smart chunking that tries to preserve semantic boundaries."""
+    text = text.replace("\\r", " ")
+    
+    # Split by paragraphs first
+    paragraphs = [p.strip() for p in text.split("\\n\\n") if p.strip()]
+    
+    chunks = []
+    current_chunk = ""
+    
+    for para in paragraphs:
+        if len(current_chunk) + len(para) < max_chars:
+            current_chunk += para + "\\n\\n"
+        else:
+            if current_chunk:
+                chunks.append(current_chunk.strip())
+            current_chunk = para + "\\n\\n"
+    
+    if current_chunk:
+        chunks.append(current_chunk.strip())
+    
+    return chunks if chunks else [text[:max_chars]]
+
+def call_llm_api(
+    base_url: str,
+    api_key: str,
+    model: str,
+    system_prompt: str,
+    user_prompt: str,
+    temperature: float = 0.1,
+) -> str:
+    """Call an OpenAI-compatible /v1/chat/completions endpoint."""
+    # Ensure URL is formatted correctly
+    url = base_url.rstrip("/") + "/v1/chat/completions"
+    
+    headers = {
+        "Content-Type": "application/json"
+    }
+    if api_key:
+        headers["Authorization"] = f"Bearer {api_key}"
+
+    payload = {
+        "model": model,
+        "temperature": temperature,
+        "stream": False,
+        "messages": [
+            {"role": "system", "content": system_prompt},
+            {"role": "user", "content": user_prompt},
+        ],
+    }
+
+    try:
+        # NOTE: In Stlite/Pyodide, requests is patched to use XMLHttpRequest.
+        # This requires the server (Ollama) to allow CORS (OLLAMA_ORIGINS="*").
+        resp = requests.post(url, headers=headers, json=payload, timeout=180)
+        resp.raise_for_status()
+    except Exception as e:
+        raise RuntimeError(f"Error calling LLM. Ensure Ollama is running with OLLAMA_ORIGINS='*' set. Details: {e}") from e
+
+    data = resp.json()
+
+    try:
+        return data["choices"][0]["message"]["content"]
+    except Exception:
+        raise RuntimeError(f"Unexpected LLM response format: {data}")
+
+
+def extract_master_concept(
+    base_url: str, 
+    api_key: str, 
+    model: str, 
+    all_texts: List[Tuple[str, str]], 
+    temperature: float = 0.1
+) -> str:
+    """Ask LLM to identify the core concept from ALL documents."""
+    
+    # Combine first 1500 chars from each document for master concept detection
+    combined_preview = ""
+    for doc_name, text in all_texts:
+        preview = text[:1500].strip()
+        combined_preview += f"\\n\\n--- Document: {doc_name} ---\\n{preview}"
+    
+    # Limit total context
+    combined_preview = combined_preview[:6000]
+    
+    system_prompt = (
+        "You are an expert at analyzing documents and identifying their core theme. "
+        "Respond with ONLY a short phrase (2-4 words) that captures the main topic. "
+        "Examples: 'Machine Learning', 'Climate Science', 'Project Management', 'Neural Networks'. "
+        "Do not include articles (a, an, the) or extra words."
+    )
+    
+    user_prompt = (
+        f"Analyze these document excerpts and identify the ONE main topic that unifies them:\\n"
+        f"{combined_preview}\\n\\n"
+        f"What is the central concept? Respond with ONLY 2-4 words:"
+    )
+    
+    try:
+        response = call_llm_api(base_url, api_key, model, system_prompt, user_prompt, temperature)
+        
+        # Aggressive cleaning
+        concept = response.strip()
+        concept = concept.strip('"').strip("'").strip('\`').strip()
+        concept = concept.split("\\n")[0].strip()
+        for prefix in ["The central concept is", "Main topic:", "Topic:", "Central concept:", "Answer:"]:
+            if concept.startswith(prefix):
+                concept = concept[len(prefix):].strip()
+        
+        for article in [" the ", " a ", " an "]:
+            concept = concept.replace(article, " ")
+        concept = " ".join(concept.split())
+        
+        if len(concept) > 50 or len(concept) < 2:
+            first_text = all_texts[0][1]
+            words = first_text.split()[:5]
+            concept = " ".join(words)
+        
+        concept = concept.strip().title()
+        
+        return concept if concept else "Knowledge Base"
+        
+    except Exception as e:
+        st.warning(f"Could not detect master concept: {e}. Using fallback.")
+        if all_texts:
+            first_text = all_texts[0][1]
+            words = [w for w in first_text.split()[:8] if len(w) > 3]
+            return " ".join(words[:3]).title() if words else "Knowledge Base"
+        return "Knowledge Base"
+
+
+def normalize_entity(raw: str) -> Optional[Tuple[str, str]]:
+    """Normalize an entity label for de-dup and filtering."""
+    if raw is None:
+        return None
+
+    txt = str(raw).strip()
+    if not txt:
+        return None
+
+    display = " ".join(txt.split())
+
+    if len(display) < 2:
+        return None
+
+    stopwords = {"the", "a", "an", "and", "or", "but", "in", "on", "at", "to", "for"}
+    if display.lower() in stopwords:
+        return None
+
+    canonical = display.lower()
+    return canonical, display
+
+
+def parse_triples_with_direction(text: str) -> List[Tuple[str, str, str]]:
+    """Parse directed triples from LLM output."""
+    triples: List[Tuple[str, str, str]] = []
+    
+    lines = text.split("\\n")
+    
+    for line in lines:
+        line = line.strip()
+        if not line:
+            continue
+        
+        line = line.lstrip("0123456789.-•*# ").strip()
+        
+        if "|" not in line:
+            continue
+        
+        parts = [p.strip() for p in line.split("|")]
+        
+        if len(parts) != 3:
+            continue
+        
+        s, r, o = parts
+        
+        norm_s = normalize_entity(s)
+        norm_o = normalize_entity(o)
+        norm_r = normalize_entity(r)
+
+        if not (norm_s and norm_r and norm_o):
+            continue
+
+        triples.append((norm_s[1], norm_r[1], norm_o[1]))
+    
+    return triples
+
+
+def get_or_create_node(G: nx.DiGraph, label: str, node_type: str = "entity") -> Optional[str]:
+    """Return a stable node name for a label, creating it if needed."""
+    norm = normalize_entity(label)
+    if not norm:
+        return None
+
+    canonical, display = norm
+    node_map = st.session_state.get("node_canonical_map", {})
+
+    if canonical in node_map:
+        return node_map[canonical]
+    else:
+        node_name = display
+        G.add_node(node_name, label=display, type=node_type)
+        node_map[canonical] = node_name
+        st.session_state["node_canonical_map"] = node_map
+        return node_name
+
+
+def add_triples_to_graph(
+    G: nx.DiGraph, 
+    triples: List[Tuple[str, str, str]], 
+    source_label: str
+) -> int:
+    """Add directed triples to the graph. Returns count of added triples."""
+    
+    added_count = 0
+    
+    for raw_s, raw_r, raw_o in triples:
+        s = get_or_create_node(G, raw_s, "entity")
+        o = get_or_create_node(G, raw_o, "entity")
+        r = raw_r.strip()
+
+        if not (s and o and r):
+            continue
+
+        if not G.has_edge(s, o):
+            G.add_edge(s, o, relations=[], sources=set())
+
+        edge_data = G[s][o]
+        if r not in edge_data["relations"]:
+            edge_data["relations"].append(r)
+        edge_data["sources"].add(source_label)
+        
+        added_count += 1
+    
+    return added_count
+
+
+def connect_to_master(
+    G: nx.DiGraph, 
+    master_node: str, 
+    threshold_percentile: int,
+    base_url: str,
+    api_key: str,
+    model: str,
+    temperature: float
+):
+    """Connect high-importance entities to the master node with semantic relations."""
+    if master_node not in G:
+        return
+    
+    entity_nodes = [n for n in G.nodes() if G.nodes[n].get("type") != "master"]
+    
+    if not entity_nodes:
+        return
+    
+    degrees = {node: G.degree(node) for node in entity_nodes}
+    
+    if not degrees:
+        return
+    
+    sorted_nodes = sorted(degrees.items(), key=lambda x: x[1], reverse=True)
+    
+    num_to_connect = max(1, int(len(sorted_nodes) * threshold_percentile / 100))
+    # Cap at 20 to avoid massive prompt context
+    num_to_connect = min(num_to_connect, 20)
+    
+    nodes_to_process = [n for n, d in sorted_nodes[:num_to_connect] if not G.has_edge(master_node, n)]
+    
+    if not nodes_to_process:
+        return
+
+    # Batch LLM call to get meaningful relations
+    system_prompt = "You are a knowledge graph expert. Define specific 1-3 word relationship verbs."
+    user_prompt = (
+        f"The Master Concept is: '{master_node}'.\\n"
+        f"Determine the specific relationship from the Master Concept to these Sub-Concepts: {', '.join(nodes_to_process)}.\\n"
+        "Output one line per entity: 'Sub-Concept | Relationship'\\n"
+        "Example: 'Neural Networks | uses'\\n"
+        "Keep relationships short (e.g., 'includes', 'requires', 'produces', 'affects')."
+    )
+
+    try:
+        response = call_llm_api(base_url, api_key, model, system_prompt, user_prompt, temperature)
+        
+        # Parse map
+        rel_map = {}
+        for line in response.split('\\n'):
+            if '|' in line:
+                parts = line.split('|')
+                if len(parts) >= 2:
+                    ent = parts[0].strip()
+                    rel = parts[1].strip()
+                    rel_map[ent.lower()] = rel
+        
+        for node in nodes_to_process:
+            # Fallback to 'relates to' if LLM missed one or parsing failed
+            relation = rel_map.get(node.lower(), "relates to")
+            G.add_edge(master_node, node, relations=[relation], sources=set())
+            
+    except Exception as e:
+        # Fallback if LLM fails completely
+        for node in nodes_to_process:
+            G.add_edge(master_node, node, relations=["relates to"], sources=set())
+
+
+def visualize_pyvis_graph(G: nx.DiGraph, height: str = "750px"):
+    """
+    Convert NetworkX graph to PyVis interactive HTML.
+    Supports: Infinite canvas, physics, click-to-highlight.
+    """
+    if len(G.nodes) == 0:
+        st.warning("Graph is empty.")
+        return
+
+    # 1. Create PyVis Network
+    # bgcolor=#0E1117 matches Streamlit dark mode
+    net = Network(height=height, width="100%", bgcolor="#0E1117", font_color="white", directed=True)
+    
+    # 2. Convert NetworkX to PyVis
+    degrees = dict(G.degree())
+    max_degree = max(degrees.values()) if degrees else 1
+    
+    for node in G.nodes():
+        node_type = G.nodes[node].get("type", "entity")
+        degree = degrees.get(node, 0)
+        
+        # Base Size
+        size = 15 + (20 * (degree / max_degree))
+        
+        # Tooltip
+        title = f"{node}\\nLinks: {degree}"
+        
+        # Visual Attributes
+        if node_type == "master":
+            color = "#FF6B9D"  # Pink/Red for master
+            shape = "star"
+            size = 40
+            font = {"size": 24, "face": "arial", "color": "white"}
+        else:
+            intensity = int(100 + (155 * (degree / max_degree)))
+            color = f"#00{intensity:02x}{intensity:02x}" # Cyan-ish
+            shape = "dot"
+            font = {"size": 14, "face": "arial", "color": "white"}
+            
+        net.add_node(
+            node, 
+            label=node, 
+            title=title, 
+            color=color, 
+            shape=shape, 
+            size=size,
+            font=font,
+            borderWidth=1,
+            borderWidthSelected=3, 
+        )
+
+    for u, v, data in G.edges(data=True):
+        relations = data.get("relations", ["related"])
+        label = relations[0] if relations else ""
+        
+        if len(label) > 15:
+            label = label[:12] + "..."
+            
+        net.add_edge(
+            u, 
+            v, 
+            title=f"Relation: {', '.join(relations)}",
+            label=label,
+            color="rgba(150, 150, 150, 0.5)",
+            arrows="to"
+        )
+
+    # 3. Physics & Interaction Settings
+    options = {
+        "nodes": {
+            "font": { "strokeWidth": 0, "strokeColor": "#ffffff" }
+        },
+        "edges": {
+            "color": { "inherit": False, "opacity": 0.5 },
+            "smooth": { "type": "continuous", "forceDirection": "none" }
+        },
+        "physics": {
+            "forceAtlas2Based": {
+                "gravitationalConstant": -100,
+                "centralGravity": 0.005,
+                "springLength": 250,
+                "springConstant": 0.05
+            },
+            "minVelocity": 0.75,
+            "solver": "forceAtlas2Based",
+            "stabilization": { "enabled": True, "iterations": 200 }
+        },
+        "interaction": {
+            "hover": True,
+            "tooltipDelay": 200,
+            "multiselect": True,
+            "navigationButtons": True,
+            "keyboard": True,
+            "zoomView": True,
+            "dragView": True,
+            "dragNodes": True
+        }
+    }
+    
+    net.set_options(json.dumps(options))
+
+    # 4. Save to temporary file and read back
+    try:
+        # In Stlite (Wasm), we use tempfile which creates a virtual file in memory
+        with tempfile.NamedTemporaryFile(delete=False, suffix=".html") as tmp:
+            net.save_graph(tmp.name)
+            with open(tmp.name, "r", encoding="utf-8") as f:
+                html_content = f.read()
+        
+        components.html(html_content, height=800, scrolling=False)
+        
+    except Exception as e:
+        st.error(f"Error visualizing graph: {e}")
+
+
+def get_graph_export_data(G: nx.DiGraph) -> Dict[str, Any]:
+    """Export graph in LLM-friendly format."""
+    master_nodes = [n for n in G.nodes if G.nodes[n].get("type") == "master"]
+    master = master_nodes[0] if master_nodes else None
+    
+    export = {
+        "master_concept": master,
+        "entities": [],
+        "relationships": []
+    }
+    
+    for node in G.nodes:
+        if G.nodes[node].get("type") != "master":
+            export["entities"].append({
+                "name": node,
+                "connections": G.degree(node)
+            })
+    
+    for u, v, data in G.edges(data=True):
+        for rel in data.get("relations", []):
+            export["relationships"].append({
+                "from": u,
+                "relation": rel,
+                "to": v
+            })
+    
+    return export
+
+
+def render_export_buttons():
+    """Show download buttons, including full state persistence."""
+    G = st.session_state.kg_graph
+    if len(G.edges) == 0:
+        return
+    
+    # 1. Export Data (Summary)
+    export_data = get_graph_export_data(G)
+    json_blob = json.dumps(export_data, ensure_ascii=False, indent=2)
+    
+    text_lines = [f"Master: {export_data['master_concept']}\\n"]
+    text_lines.append("\\nTop Entities:")
+    for ent in sorted(export_data['entities'], key=lambda x: x['connections'], reverse=True)[:30]:
+        text_lines.append(f"  • {ent['name']} ({ent['connections']} links)")
+    
+    text_lines.append("\\n\\nRelationships:")
+    for rel in export_data['relationships'][:100]:
+        text_lines.append(f"  {rel['from']} → {rel['relation']} → {rel['to']}")
+    
+    text_blob = "\\n".join(text_lines)
+
+    # 2. Save State Data (Persistence)
+    state_data = {
+        "master_concept": st.session_state.master_concept,
+        "graph_data": nx.node_link_data(G)
+    }
+    
+    def set_default(obj):
+        if isinstance(obj, set):
+            return list(obj)
+        raise TypeError
+        
+    state_blob = json.dumps(state_data, ensure_ascii=False, indent=2, default=set_default)
+
+    st.subheader("📤 Export & Save")
+    col1, col2, col3 = st.columns(3)
+    
+    with col1:
+        st.download_button(
+            "⬇️ Graph State (JSON)",
+            state_blob,
+            file_name="graph_state.json",
+            mime="application/json",
+            help="Save this file to reload the graph later without rebuilding."
+        )
+        
+    with col2:
+        st.download_button(
+            "⬇️ Data (JSON)",
+            json_blob,
+            file_name="knowledge_graph.json",
+            mime="application/json",
+            help="Export entities and relationships for external use."
+        )
+        
+    with col3:
+        st.download_button(
+            "⬇️ Summary (Txt)",
+            text_blob,
+            file_name="knowledge_graph.txt",
+            mime="text/plain",
+            help="Human-readable summary of the graph."
+        )
+
+
+def retrieve_graph_context(G: nx.DiGraph, query: str, max_tokens: int = 3000) -> str:
+    """Retrieve relevant edges from the graph based on query terms."""
+    query_lower = query.lower()
+    relevant_nodes = []
+    
+    for node in G.nodes():
+        if str(node).lower() in query_lower:
+            relevant_nodes.append(node)
+            
+    if not relevant_nodes:
+        master_nodes = [n for n in G.nodes if G.nodes[n].get("type") == "master"]
+        if master_nodes:
+            relevant_nodes = master_nodes
+
+    context_lines = []
+    seen_edges = set()
+    
+    if not relevant_nodes:
+        return "No specific graph connections found for these terms."
+
+    for node in relevant_nodes:
+        # Outgoing edges
+        for _, neighbor, data in G.out_edges(node, data=True):
+            edge_key = (node, neighbor)
+            if edge_key not in seen_edges:
+                rels = ", ".join(data.get("relations", []))
+                context_lines.append(f"{node} --[{rels}]--> {neighbor}")
+                seen_edges.add(edge_key)
+        
+        # Incoming edges
+        for neighbor, _, data in G.in_edges(node, data=True):
+            edge_key = (neighbor, node)
+            if edge_key not in seen_edges:
+                rels = ", ".join(data.get("relations", []))
+                context_lines.append(f"{neighbor} --[{rels}]--> {node}")
+                seen_edges.add(edge_key)
+
+    context_str = "\\n".join(context_lines)
+    return context_str[:max_tokens]
+
+
+# ---------------------------------------------------------
+# Streamlit App
+# ---------------------------------------------------------
+
+st.set_page_config(
+    page_title="AI Knowledge Graph (Wasm)",
+    layout="wide",
+)
+
+st.title("🧠 AI Knowledge Graph Builder")
+st.markdown("Host: **GitHub Pages** | Engine: **Browser** | LLM: **Localhost**")
+st.caption("This app runs entirely in your browser using WebAssembly. It connects to your local LLM (Ollama) directly.")
+
+# Initialize state
+if "kg_graph" not in st.session_state:
+    st.session_state.kg_graph = nx.DiGraph()
+
+if "node_canonical_map" not in st.session_state:
+    st.session_state.node_canonical_map = {}
+
+if "master_concept" not in st.session_state:
+    st.session_state.master_concept = None
+
+if "processing_complete" not in st.session_state:
+    st.session_state.processing_complete = False
+
+if "chat_history" not in st.session_state:
+    st.session_state.chat_history = []
+
+
+# Sidebar
+with st.sidebar:
+    st.header("🔧 LLM Configuration")
+
+    st.error("⚠️ REQUIRED: You must set OLLAMA_ORIGINS='*' environment variable on your local machine for this to work!")
+
+    base_url = st.text_input(
+        "Base URL",
+        value="http://localhost:11434",
+        help="e.g. http://localhost:11434"
+    )
+
+    api_key = st.text_input(
+        "API Key (Optional)",
+        type="password",
+        help="Required for OpenAI or secured local endpoints"
+    )
+
+    model_name = st.text_input(
+        "Model",
+        value="llama3.2",
+    )
+
+    temperature = st.slider(
+        "Temperature",
+        0.0, 1.0, 0.1, 0.05
+    )
+
+    st.markdown("---")
+    st.header("⚙️ Graph Settings")
+
+    auto_detect = st.checkbox(
+        "Auto-detect master concept",
+        value=True,
+    )
+    
+    manual_master = st.text_input(
+        "Or set manually:",
+        value="",
+        disabled=auto_detect
+    )
+
+    connection_pct = st.slider(
+        "Master connections (%)",
+        50, 95, 70,
+        help="Top % of nodes to connect to master"
+    )
+
+    custom_extraction_prompt = st.text_area(
+        "Custom Extraction Focus (Optional)",
+        placeholder="e.g. Focus on dates and timeline events...",
+        help="Instructions for the AI to focus on specific types of relationships."
+    )
+
+    st.markdown("---")
+    
+    # Persistence: Load Graph
+    st.header("💾 Persistence")
+    uploaded_graph_state = st.file_uploader(
+        "Load Graph State (JSON)", 
+        type="json",
+        help="Upload a previously saved 'Graph State' JSON file."
+    )
+
+    if uploaded_graph_state is not None:
+        try:
+            state_data = json.load(uploaded_graph_state)
+            if "graph_data" in state_data:
+                G_loaded = nx.node_link_graph(state_data["graph_data"])
+                
+                for u, v, data in G_loaded.edges(data=True):
+                    if "sources" in data and isinstance(data["sources"], list):
+                        data["sources"] = set(data["sources"])
+                        
+                st.session_state.kg_graph = G_loaded
+                st.session_state.master_concept = state_data.get("master_concept")
+                st.session_state.processing_complete = True
+                st.success(f"✅ Loaded graph with {len(G_loaded.nodes)} nodes")
+            else:
+                st.error("Invalid graph state file format.")
+        except Exception as e:
+            st.error(f"Error loading graph: {e}")
+
+    st.markdown("---")
+
+    if st.button("🗑️ Clear All", use_container_width=True):
+        st.session_state.kg_graph = nx.DiGraph()
+        st.session_state.node_canonical_map = {}
+        st.session_state.master_concept = None
+        st.session_state.processing_complete = False
+        st.session_state.chat_history = []
+        st.rerun()
+
+
+# File upload
+supported_extensions = [
+    "pdf", "txt", "md", "markdown", "json", "xml", "html", "htm", 
+    "css", "js", "ts", "tsx", "jsx", "py", "java", "c", "cpp", "h", 
+    "cs", "go", "rs", "php", "rb", "kt", "swift", "sh", "yaml", "yml", 
+    "sql", "r", "m", "tex", "latex", "toml", "ini", "bat", "ps1"
+]
+
+uploaded_files = st.file_uploader(
+    "📄 Upload Documents",
+    type=supported_extensions,
+    accept_multiple_files=True,
+)
+
+# Build button
+if st.button("🚀 Build Graph", type="primary", use_container_width=True):
+    
+    if not uploaded_files:
+        st.error("❌ Please upload at least one file")
+        st.stop()
+
+    if not base_url or not model_name:
+        st.error("❌ Configure LLM settings in sidebar")
+        st.stop()
+
+    # Reset state
+    st.session_state.processing_complete = False
+    
+    all_texts = []
+    with st.spinner("📖 Reading files..."):
+        for f in uploaded_files:
+            try:
+                text = extract_text_from_file(f)
+                if text.strip():
+                    all_texts.append((f.name, text))
+            except Exception as e:
+                st.warning(f"Could not read {f.name}: {e}")
+    
+    if not all_texts:
+        st.error("❌ No text extracted from files")
+        st.stop()
+    
+    st.success(f"✅ Read {len(all_texts)} document(s)")
+    
+    master_concept = None
+    if auto_detect:
+        with st.spinner("🎯 Detecting central concept..."):
+            try:
+                master_concept = extract_master_concept(base_url, api_key, model_name, all_texts, temperature)
+                st.session_state.master_concept = master_concept
+                st.info(f"🎯 Master concept: **{master_concept}**")
+            except Exception as e:
+                st.error(f"Failed to detect master concept: {e}")
+                master_concept = "Knowledge Base"
+                st.session_state.master_concept = master_concept
+    else:
+        master_concept = manual_master.strip() or "Knowledge Base"
+        st.session_state.master_concept = master_concept
+        st.info(f"🎯 Master concept: **{master_concept}**")
+    
+    G = nx.DiGraph()
+    G.add_node(master_concept, label=master_concept, type="master")
+    
+    st.session_state.node_canonical_map = {}
+    
+    all_chunks = []
+    for doc_name, text in all_texts:
+        chunks = chunk_text(text, max_chars=2500)
+        for chunk in chunks:
+            all_chunks.append((doc_name, chunk))
+    
+    st.info(f"📦 Processing {len(all_chunks)} chunks...")
+    
+    base_system_prompt = (
+        "You are a knowledge extraction expert. Extract key relationships as triples.\\n"
+        "Format: SUBJECT | RELATIONSHIP | OBJECT\\n"
+        "Rules:\\n"
+        "- One triple per line\\n"
+        "- Use clear, specific entity names\\n"
+        "- Use meaningful relationship verbs\\n"
+        "- No numbering, no extra text\\n"
+    )
+    
+    if custom_extraction_prompt and custom_extraction_prompt.strip():
+        base_system_prompt += f"\\nIMPORTANT FOCUS: {custom_extraction_prompt.strip()}\\n"
+    else:
+        base_system_prompt += "- Focus on important factual relationships\\n"
+
+    
+    progress_bar = st.progress(0)
+    status_text = st.empty()
+    
+    total_triples = 0
+    
+    for idx, (doc_name, chunk) in enumerate(all_chunks, 1):
+        status_text.text(f"⚙️ Processing chunk {idx}/{len(all_chunks)} from {doc_name}...")
+        
+        user_prompt = (
+            f"Extract knowledge triples from this text:\\n\\n"
+            f"{chunk}\\n\\n"
+            f"Output ONLY triples in format: SUBJECT | RELATIONSHIP | OBJECT"
+        )
+        
+        try:
+            llm_output = call_llm_api(
+                base_url, api_key, model_name, base_system_prompt, user_prompt, temperature
+            )
+            
+            triples = parse_triples_with_direction(llm_output)
+            
+            if triples:
+                added = add_triples_to_graph(G, triples, doc_name)
+                total_triples += added
+            
+        except Exception as e:
+            st.warning(f"⚠️ Error on chunk {idx}: {str(e)[:100]}")
+        
+        progress_bar.progress(idx / len(all_chunks))
+    
+    if len(G.nodes) > 1:
+        status_text.text("🔗 Connecting master node to key entities...")
+        connect_to_master(G, master_concept, connection_pct, base_url, api_key, model_name, temperature)
+    
+    st.session_state.kg_graph = G
+    st.session_state.processing_complete = True
+    
+    num_nodes = len(G.nodes)
+    num_edges = len(G.edges)
+    
+    status_text.empty()
+    progress_bar.empty()
+    
+    if num_nodes > 1:
+        st.success(f"✅ **Graph built!** {num_nodes} nodes, {num_edges} edges, {total_triples} triples extracted")
+    else:
+        st.warning(f"⚠️ Only master node created. Check connectivity or model.")
+    
+    st.rerun()
+
+
+if st.session_state.processing_complete or len(st.session_state.kg_graph.nodes) > 0:
+    st.markdown("---")
+    
+    G = st.session_state.kg_graph
+    
+    col1, col2, col3 = st.columns(3)
+    with col1:
+        st.metric("🎯 Master", st.session_state.master_concept or "None")
+    with col2:
+        st.metric("🔵 Concepts", len(G.nodes) - 1)
+    with col3:
+        st.metric("🔗 Links", len(G.edges))
+    
+    st.markdown("### 🗺️ Interactive Knowledge Graph")
+    visualize_pyvis_graph(G)
+    
+    render_export_buttons()
+    
+    st.markdown("---")
+    
+    st.subheader("💬 Chat with your Graph")
+    st.caption("Ask questions about the concepts and relationships visualized above.")
+    
+    chat_container = st.container()
+    
+    user_query = st.chat_input("Ask about connections (e.g., 'How does X relate to Y?')")
+    
+    if user_query:
+        st.session_state.chat_history.append({"role": "user", "content": user_query})
+        
+        context_text = retrieve_graph_context(G, user_query)
+        
+        rag_system_prompt = (
+            "You are a helpful assistant answering questions based ONLY on the provided knowledge graph context. "
+            "If the context doesn't contain the answer, say so. "
+            "Do not hallucinate facts not present in the triples. "
+            "Cite the specific relationships used to answer."
+        )
+        
+        rag_user_prompt = (
+            f"Context from Knowledge Graph:\\n{context_text}\\n\\n"
+            f"Question: {user_query}\\n\\n"
+            f"Answer based on the context above:"
+        )
+        
+        try:
+            with st.spinner("🤖 Thinking with graph context..."):
+                answer = call_llm_api(
+                    base_url, 
+                    api_key,
+                    model_name, 
+                    rag_system_prompt, 
+                    rag_user_prompt, 
+                    temperature
+                )
+            
+            st.session_state.chat_history.append({"role": "assistant", "content": answer})
+            
+        except Exception as e:
+            st.error(f"Error generating answer: {e}")
+
+    with chat_container:
+        for message in st.session_state.chat_history:
+            if message["role"] == "user":
+                st.chat_message("user").write(message["content"])
+            else:
+                st.chat_message("assistant").write(message["content"])
+
+else:
+    st.info("👆 Upload PDFs and click 'Build Graph' to start")
+`
+        }
+      });
+    </script>
+  </body>
+</html>
