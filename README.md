@@ -2,7 +2,7 @@
 
 [![License](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 [![Python Version](https://img.shields.io/badge/Python-3.8%2B-blue)](https://www.python.org/)
-[![Streamlit App](https://static.streamlit.io/badges/streamlit_badge_black_white.svg)](https://your-live-demo-link-here.com) <!-- TODO: Replace with your actual live demo link if you host it! -->
+[![Streamlit App](https://static.streamlit.io/badges/streamlit_badge_black_white.svg)](https://knowledgelens.streamlit.app/) <!-- TODO: Replace with your actual live demo link if you host it! -->
 
 Turn your unstructured documents (PDFs, text files, code, XML) into powerful, interactive knowledge graphs using the magic of Large Language Models (LLMs)! KnowledgeLens AI helps you understand complex information, discover hidden connections, and chat with your data.
 
