@@ -14,12 +14,16 @@ def reconstruct_node_map(graph: nx.MultiDiGraph) -> dict[str, str]:
     return {canonical_key(str(node)): str(node) for node in graph.nodes}
 
 
-def migrate_legacy_graph(graph: nx.Graph) -> nx.MultiDiGraph:
+def migrate_legacy_graph(graph: nx.Graph, master_concept: str | None = None) -> nx.MultiDiGraph:
     if isinstance(graph, nx.MultiDiGraph):
         return graph
 
     migrated = nx.MultiDiGraph()
     migrated.add_nodes_from(graph.nodes(data=True))
+
+    legacy_masters = {node for node, data in graph.nodes(data=True) if data.get("type") == "master"}
+    if master_concept in graph:
+        legacy_masters.add(master_concept)
 
     for subject, obj, data in graph.edges(data=True):
         relations = data.get("relations") or [data.get("relation") or "related to"]
@@ -34,11 +38,20 @@ def migrate_legacy_graph(graph: nx.Graph) -> nx.MultiDiGraph:
             raw_sources = [raw_sources]
         legacy_sources = sorted({str(source) for source in raw_sources if source})
 
-        source_note = ", ".join(legacy_sources) if legacy_sources else "unknown"
-        evidence = (
-            "Migrated from KnowledgeLens graph state v1. The legacy schema did not preserve "
-            f"which relation was supported by which source; candidate sources: {source_note}."
-        )
+        legacy_synthetic = subject in legacy_masters and not legacy_sources
+        if legacy_synthetic:
+            evidence = (
+                "Migrated from a source-less KnowledgeLens v1 master overview link. "
+                "This topology edge is synthetic and must not be used as document evidence."
+            )
+            provenance_status = "legacy-synthetic"
+        else:
+            source_note = ", ".join(legacy_sources) if legacy_sources else "unknown"
+            evidence = (
+                "Migrated from KnowledgeLens graph state v1. The legacy schema did not preserve "
+                f"which relation was supported by which source; candidate sources: {source_note}."
+            )
+            provenance_status = "legacy-aggregated"
 
         # Create one claim per relation, not a relation×source Cartesian product.
         for relation in relations:
@@ -52,8 +65,8 @@ def migrate_legacy_graph(graph: nx.Graph) -> nx.MultiDiGraph:
                 chunk_index=0,
                 evidence=evidence,
                 confidence=None,
-                synthetic=False,
-                provenance_status="legacy-aggregated",
+                synthetic=legacy_synthetic,
+                provenance_status=provenance_status,
             )
 
     return migrated
@@ -93,8 +106,8 @@ def deserialize_graph_state(raw: bytes | str) -> tuple[nx.MultiDiGraph, str | No
     if not isinstance(graph_data, dict):
         raise ValueError("Graph state does not contain valid graph_data.")
 
-    loaded = migrate_legacy_graph(_node_link_graph(graph_data))
     master = state.get("master_concept")
+    loaded = migrate_legacy_graph(_node_link_graph(graph_data), master_concept=master)
     node_map = state.get("node_canonical_map")
     if not isinstance(node_map, dict):
         node_map = reconstruct_node_map(loaded)
