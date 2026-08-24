@@ -64,10 +64,10 @@ def _master_evidence_neighbors(
 ) -> list[str]:
     """Use synthetic master topology only to choose nearby evidence-bearing seeds."""
     candidates: set[str] = set()
-    for subject, obj, data in graph.out_edges(master, data=True):
+    for _subject, obj, data in graph.out_edges(master, data=True):
         if data.get("synthetic") and obj in evidence_graph and evidence_graph.degree(obj) > 0:
             candidates.add(str(obj))
-    for subject, obj, data in graph.in_edges(master, data=True):
+    for subject, _obj, data in graph.in_edges(master, data=True):
         if data.get("synthetic") and subject in evidence_graph and evidence_graph.degree(subject) > 0:
             candidates.add(str(subject))
 
