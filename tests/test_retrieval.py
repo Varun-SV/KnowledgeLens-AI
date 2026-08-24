@@ -86,6 +86,31 @@ def test_synthetic_overview_links_are_not_grounded_evidence():
     assert "No specific source-backed graph connections" in context
 
 
+def test_master_query_routes_through_topology_to_evidence_bearing_neighbors():
+    graph = nx.MultiDiGraph()
+    graph.add_node("Knowledge Base", type="master")
+    graph.add_node("Cache")
+    graph.add_node("Latency")
+    graph.add_edge(
+        "Knowledge Base",
+        "Cache",
+        key="synthetic",
+        relation="includes",
+        source="KnowledgeLens",
+        chunk_index=0,
+        synthetic=True,
+    )
+    _edge(graph, "Cache", "Latency", "real", "reduces")
+
+    seeds = relevant_nodes(graph, "Summarize Knowledge Base")
+    context = retrieve_graph_context(graph, "Summarize Knowledge Base")
+
+    assert seeds[0] == "Cache"
+    assert "Cache --[reduces]--> Latency" in context
+    assert "KnowledgeLens" not in context
+    assert "--[includes]-->" not in context
+
+
 def test_generic_query_falls_back_to_evidence_bearing_node():
     graph = nx.MultiDiGraph()
     graph.add_node("Knowledge Base", type="master")
