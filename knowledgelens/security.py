@@ -3,22 +3,36 @@ from __future__ import annotations
 import ipaddress
 import os
 import socket
+from dataclasses import dataclass
 from urllib.parse import urlparse
+
+IPAddress = ipaddress.IPv4Address | ipaddress.IPv6Address
 
 
 class EndpointPolicyError(ValueError):
     pass
 
 
-def _flag(name: str, default: bool = False) -> bool:
+@dataclass(frozen=True, slots=True)
+class ValidatedEndpoint:
+    base_url: str
+    scheme: str
+    hostname: str
+    port: int
+    host_header: str
+    base_path: str
+    addresses: tuple[IPAddress, ...]
+
+
+def env_flag(name: str, default: bool = False) -> bool:
     value = os.getenv(name)
     if value is None:
         return default
-    return value.strip().lower() in {"1", "true", "yes", "on"}
+    return value.strip().casefold() in {"1", "true", "yes", "on"}
 
 
-def _resolve_addresses(hostname: str) -> list[ipaddress._BaseAddress]:
-    addresses: list[ipaddress._BaseAddress] = []
+def _resolve_addresses(hostname: str) -> list[IPAddress]:
+    addresses: list[IPAddress] = []
     try:
         addresses.append(ipaddress.ip_address(hostname))
     except ValueError:
@@ -34,7 +48,8 @@ def _resolve_addresses(hostname: str) -> list[ipaddress._BaseAddress]:
     return addresses
 
 
-def validate_endpoint(base_url: str) -> str:
+def resolve_endpoint(base_url: str) -> ValidatedEndpoint:
+    """Resolve and validate an endpoint, retaining the exact addresses that passed policy."""
     candidate = base_url.strip().rstrip("/")
     parsed = urlparse(candidate)
     if parsed.scheme not in {"http", "https"} or not parsed.hostname:
@@ -44,9 +59,14 @@ def validate_endpoint(base_url: str) -> str:
     if parsed.query or parsed.fragment:
         raise EndpointPolicyError("Endpoint URLs must not contain query strings or fragments.")
 
+    try:
+        port = parsed.port or (443 if parsed.scheme == "https" else 80)
+    except ValueError as exc:
+        raise EndpointPolicyError("Endpoint URL contains an invalid port.") from exc
+
     hostname = parsed.hostname.casefold()
-    allow_local = _flag("KNOWLEDGELENS_ALLOW_LOCAL_ENDPOINTS", default=False)
-    allow_private = _flag("KNOWLEDGELENS_ALLOW_PRIVATE_ENDPOINTS", default=False)
+    allow_local = env_flag("KNOWLEDGELENS_ALLOW_LOCAL_ENDPOINTS", default=False)
+    allow_private = env_flag("KNOWLEDGELENS_ALLOW_PRIVATE_ENDPOINTS", default=False)
 
     addresses = _resolve_addresses(hostname)
     http_safe = True
@@ -77,4 +97,16 @@ def validate_endpoint(base_url: str) -> str:
     if parsed.scheme == "http" and not http_safe:
         raise EndpointPolicyError("Public endpoints must use HTTPS.")
 
-    return candidate
+    return ValidatedEndpoint(
+        base_url=candidate,
+        scheme=parsed.scheme,
+        hostname=hostname,
+        port=port,
+        host_header=parsed.netloc,
+        base_path=parsed.path.rstrip("/"),
+        addresses=tuple(addresses),
+    )
+
+
+def validate_endpoint(base_url: str) -> str:
+    return resolve_endpoint(base_url).base_url
