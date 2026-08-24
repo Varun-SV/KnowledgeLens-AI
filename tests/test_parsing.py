@@ -28,6 +28,16 @@ def test_unicode_entity_normalization_is_preserved():
     assert normalize_entity("الذكاء الاصطناعي")[0] == "الذكاء الاصطناعي"
 
 
+def test_identifier_significant_punctuation_remains_distinct():
+    assert normalize_entity("C")[0] == "c"
+    assert normalize_entity("C++")[0] == "c++"
+    assert normalize_entity("C#")[0] == "c#"
+    assert len({normalize_entity(value)[0] for value in ("C", "C++", "C#")}) == 3
+    assert normalize_entity(".NET")[0] == ".net"
+    assert normalize_entity("Node.js")[0] == "node.js"
+    assert normalize_entity("Attention.")[0] == "attention"
+
+
 def test_markdown_fence_stripping_handles_large_whitespace_without_regex():
     chunk = DocumentChunk(source="x.md", text="x", chunk_index=1)
     payload = '```json\n{"subject":"AI","relation":"uses","object":"GPU"}\n```' + (" " * 100_000)
