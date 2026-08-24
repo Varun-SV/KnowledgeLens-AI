@@ -96,10 +96,14 @@
   };
 
   const moveLens = (clientX, clientY) => {
-    const rect = svg.getBoundingClientRect();
-    const vb = svg.viewBox.baseVal;
-    const x = (clientX - rect.left) / rect.width * vb.width;
-    const y = (clientY - rect.top) / rect.height * vb.height;
+    const ctm = svg.getScreenCTM();
+    if (!ctm) return;
+    const point = svg.createSVGPoint();
+    point.x = clientX;
+    point.y = clientY;
+    const local = point.matrixTransform(ctm.inverse());
+    const x = local.x;
+    const y = local.y;
     [ring, core, clipCircle].forEach(el => { el.setAttribute('cx', x); el.setAttribute('cy', y); });
     const near = nearestEdge(x, y);
     if (near.distance < 95 && near.idx !== activeEdge) updateReadout(near.idx);
