@@ -6,11 +6,43 @@ import networkx as nx
 
 from .parsing import canonicalize_label
 
+_RETRIEVAL_STOPWORDS = frozenset(
+    {
+        "a",
+        "an",
+        "and",
+        "are",
+        "at",
+        "be",
+        "been",
+        "being",
+        "but",
+        "by",
+        "for",
+        "from",
+        "in",
+        "is",
+        "of",
+        "on",
+        "or",
+        "the",
+        "to",
+        "was",
+        "were",
+        "with",
+    }
+)
+
 
 def _token_list(value: str) -> list[str]:
     """Tokenize with the same identifier semantics used by graph canonicalization."""
     canonical = canonicalize_label(value)
     return canonical.split() if canonical else []
+
+
+def _content_token_set(value: str) -> set[str]:
+    """Return overlap tokens without generic grammatical words."""
+    return {token for token in _token_list(value) if token not in _RETRIEVAL_STOPWORDS}
 
 
 def _contains_token_phrase(query: str, node: str) -> bool:
@@ -32,8 +64,10 @@ def score_node(query: str, node: str) -> float:
     if _contains_token_phrase(q, n):
         score += 3.0
 
-    q_tokens = set(_token_list(q))
-    n_tokens = set(_token_list(n))
+    # Stopwords remain available to exact phrase identity above, but they do not
+    # create a semantic overlap match by themselves (for example, `the`).
+    q_tokens = _content_token_set(q)
+    n_tokens = _content_token_set(n)
     if q_tokens and n_tokens:
         overlap = len(q_tokens & n_tokens) / len(n_tokens)
         score += overlap * 2.0
@@ -88,23 +122,31 @@ def relevant_nodes(graph: nx.MultiDiGraph, query: str, limit: int = 5) -> list[s
     evidence_graph = _evidentiary_graph(graph)
 
     if selected:
-        expanded: list[str] = []
+        # Explicitly matched non-master entities get reserved seed slots first.
+        # Topology-only masters may then spend only the remaining budget on their
+        # synthetic neighbors, so a broad master expansion cannot evict another
+        # entity the user named in the same query.
+        protected: list[str] = []
+        topology_only_masters: list[str] = []
         for node in selected:
             is_master = graph.nodes[node].get("type") == "master"
             has_direct_evidence = node in evidence_graph and evidence_graph.degree(node) > 0
             if is_master and not has_direct_evidence:
-                neighbors = _master_evidence_neighbors(graph, node, evidence_graph, limit)
-                if neighbors:
-                    for neighbor in neighbors:
-                        if neighbor not in expanded:
-                            expanded.append(neighbor)
-                        if len(expanded) >= limit:
-                            break
-                    continue
-            if node not in expanded:
-                expanded.append(node)
+                topology_only_masters.append(node)
+            elif node not in protected:
+                protected.append(node)
+
+        expanded = protected[:limit]
+        for master in topology_only_masters:
             if len(expanded) >= limit:
                 break
+            neighbors = _master_evidence_neighbors(graph, master, evidence_graph, limit)
+            for neighbor in neighbors:
+                if neighbor not in expanded:
+                    expanded.append(neighbor)
+                if len(expanded) >= limit:
+                    break
+
         if expanded:
             return expanded[:limit]
 

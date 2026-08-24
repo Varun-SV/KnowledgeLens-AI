@@ -132,6 +132,8 @@ def _claim_from_mapping(item: dict[str, Any], chunk: DocumentChunk) -> Claim | N
         return None
 
     evidence = " ".join(str(item.get("evidence") or item.get("quote") or "").split())
+    if not evidence:
+        return None
     if len(evidence) > 500:
         evidence = evidence[:497] + "..."
 

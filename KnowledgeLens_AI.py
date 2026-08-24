@@ -19,6 +19,7 @@ from knowledgelens.models import DocumentChunk
 from knowledgelens.parsing import parse_claims, parse_master_concept_response
 from knowledgelens.persistence import deserialize_graph_state, serialize_graph_state
 from knowledgelens.retrieval import retrieve_graph_context
+from knowledgelens.runtime import no_claims_build_error, provider_credential_error
 from knowledgelens.security import EndpointPolicyError, env_flag, resolve_endpoint, validate_endpoint
 
 APP_VERSION = "0.2.0"
@@ -350,7 +351,11 @@ with st.sidebar:
         disabled=True,
         help="Custom endpoints are configured by the operator via KNOWLEDGELENS_CUSTOM_ENDPOINT.",
     )
-    api_key = st.text_input("API key", type="password", help="Kept in this Streamlit session; not written to graph exports.")
+    api_key = st.text_input(
+        "API key",
+        type="password",
+        help="Required for OpenAI; optional for local/configured endpoints. Never written to graph exports.",
+    )
     default_model = "llama3.1" if provider != "OpenAI" else "gpt-4o-mini"
     model_name = st.text_input("Model", value=default_model)
     temperature = st.slider("Temperature", 0.0, 1.0, 0.1, 0.05)
@@ -432,6 +437,10 @@ if st.button("Build evidence graph", type="primary", use_container_width=True):
     if not model_name.strip():
         st.error("Enter a model name.")
         st.stop()
+    credential_error = provider_credential_error(provider, api_key)
+    if credential_error:
+        st.error(credential_error)
+        st.stop()
     try:
         validate_endpoint(base_url)
     except EndpointPolicyError as exc:
@@ -480,6 +489,16 @@ if st.button("Build evidence graph", type="primary", use_container_width=True):
         add_master_links(graph, node_map, master, links)
 
     build_stats = graph_to_export(graph)["stats"]
+    status.empty()
+    progress.empty()
+
+    build_error = no_claims_build_error(build_stats["claims"], failures)
+    if build_error:
+        st.error(build_error)
+        st.stop()
+
+    # Commit a new graph to session state only after at least one auditable claim
+    # survives extraction. A failed rebuild therefore cannot replace a good workspace.
     st.session_state.kg_graph = graph
     st.session_state.node_canonical_map = node_map
     st.session_state.master_concept = master
@@ -487,16 +506,10 @@ if st.button("Build evidence graph", type="primary", use_container_width=True):
     st.session_state.chat_history = []
     st.session_state.loaded_state_fingerprint = current_state_fingerprint
     st.session_state.graph_revision += 1
-    status.empty()
-    progress.empty()
-
-    if graph.number_of_nodes() <= 1:
-        st.error("The model did not produce usable claims. Try a stronger instruction-following model or inspect the source text.")
-    else:
-        st.success(
-            f"Built {graph.number_of_nodes()} nodes and {build_stats['claims']} source-traceable claims "
-            f"plus {build_stats['topology_edges']} topology edges. {failures} chunks failed."
-        )
+    st.success(
+        f"Built {graph.number_of_nodes()} nodes and {build_stats['claims']} source-traceable claims "
+        f"plus {build_stats['topology_edges']} topology edges. {failures} chunks failed."
+    )
     st.rerun()
 
 if st.session_state.processing_complete or st.session_state.kg_graph.number_of_nodes() > 0:

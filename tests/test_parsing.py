@@ -22,6 +22,14 @@ def test_parse_legacy_pipe_format():
     assert claims[0].evidence == "measured in tests"
 
 
+def test_claims_without_supporting_evidence_are_rejected():
+    chunk = DocumentChunk(source="notes.md", text="x", chunk_index=2)
+    json_claims = parse_claims('[{"subject":"Cache","relation":"reduces","object":"Latency"}]', chunk)
+    pipe_claims = parse_claims("Cache | reduces | Latency", chunk)
+    assert json_claims == []
+    assert pipe_claims == []
+
+
 def test_unicode_entity_normalization_is_preserved():
     assert normalize_entity("人工知能")[0] == "人工知能"
     assert normalize_entity("Привет Мир")[0] == "привет мир"
@@ -53,6 +61,9 @@ def test_master_concept_parser_strips_common_explanatory_prefixes():
 
 def test_markdown_fence_stripping_handles_large_whitespace_without_regex():
     chunk = DocumentChunk(source="x.md", text="x", chunk_index=1)
-    payload = '```json\n{"subject":"AI","relation":"uses","object":"GPU"}\n```' + (" " * 100_000)
+    payload = (
+        '```json\n{"subject":"AI","relation":"uses","object":"GPU","evidence":"GPU accelerates AI workloads"}\n```'
+        + (" " * 100_000)
+    )
     claims = parse_claims(payload, chunk)
     assert len(claims) == 1

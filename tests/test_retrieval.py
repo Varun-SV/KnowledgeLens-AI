@@ -33,6 +33,12 @@ def test_short_entity_does_not_match_inside_unrelated_words():
     assert score_node("explain AI details", "AI") >= 3.0
 
 
+def test_stopwords_do_not_create_overlap_matches_by_themselves():
+    assert score_node("summarize the evidence", "The API") < 0.6
+    assert score_node("summarize the evidence", "The Cache") < 0.6
+    assert score_node("explain the API", "The API") >= 3.0
+
+
 def test_retrieval_scoring_preserves_identifier_punctuation():
     query = "Compare C++ performance with Rust"
     assert score_node(query, "C++") > score_node(query, "C")
@@ -109,6 +115,28 @@ def test_master_query_routes_through_topology_to_evidence_bearing_neighbors():
     assert "Cache --[reduces]--> Latency" in context
     assert "KnowledgeLens" not in context
     assert "--[includes]-->" not in context
+
+
+def test_master_expansion_reserves_seed_for_other_explicit_entity():
+    graph = nx.MultiDiGraph()
+    graph.add_node("Knowledge Base", type="master")
+    for index, node in enumerate(("Cache", "Latency", "Auth", "Queue", "Storage")):
+        graph.add_edge(
+            "Knowledge Base",
+            node,
+            key=f"synthetic-{index}",
+            relation="includes",
+            source="KnowledgeLens",
+            chunk_index=0,
+            synthetic=True,
+        )
+        _edge(graph, node, f"Leaf {index}", f"real-{index}", "supports")
+    _edge(graph, "Remote Entity", "Remote Leaf", "remote", "connects")
+
+    seeds = relevant_nodes(graph, "Compare Knowledge Base and Remote Entity", limit=5)
+
+    assert "Remote Entity" in seeds
+    assert len(seeds) == 5
 
 
 def test_generic_query_falls_back_to_evidence_bearing_node():
