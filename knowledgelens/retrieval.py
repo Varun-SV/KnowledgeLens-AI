@@ -56,6 +56,28 @@ def _evidentiary_graph(graph: nx.MultiDiGraph) -> nx.Graph:
     return simple
 
 
+def _master_evidence_neighbors(
+    graph: nx.MultiDiGraph,
+    master: str,
+    evidence_graph: nx.Graph,
+    limit: int,
+) -> list[str]:
+    """Use synthetic master topology only to choose nearby evidence-bearing seeds."""
+    candidates: set[str] = set()
+    for subject, obj, data in graph.out_edges(master, data=True):
+        if data.get("synthetic") and obj in evidence_graph and evidence_graph.degree(obj) > 0:
+            candidates.add(str(obj))
+    for subject, obj, data in graph.in_edges(master, data=True):
+        if data.get("synthetic") and subject in evidence_graph and evidence_graph.degree(subject) > 0:
+            candidates.add(str(subject))
+
+    return sorted(
+        candidates,
+        key=lambda node: (evidence_graph.degree(node), node.casefold()),
+        reverse=True,
+    )[:limit]
+
+
 def relevant_nodes(graph: nx.MultiDiGraph, query: str, limit: int = 5) -> list[str]:
     ranked = sorted(
         ((score_node(query, str(node)), str(node)) for node in graph.nodes),
@@ -63,12 +85,31 @@ def relevant_nodes(graph: nx.MultiDiGraph, query: str, limit: int = 5) -> list[s
         reverse=True,
     )
     selected = [node for score, node in ranked if score >= 0.6][:limit]
+    evidence_graph = _evidentiary_graph(graph)
+
     if selected:
-        return selected
+        expanded: list[str] = []
+        for node in selected:
+            is_master = graph.nodes[node].get("type") == "master"
+            has_direct_evidence = node in evidence_graph and evidence_graph.degree(node) > 0
+            if is_master and not has_direct_evidence:
+                neighbors = _master_evidence_neighbors(graph, node, evidence_graph, limit)
+                if neighbors:
+                    for neighbor in neighbors:
+                        if neighbor not in expanded:
+                            expanded.append(neighbor)
+                        if len(expanded) >= limit:
+                            break
+                    continue
+            if node not in expanded:
+                expanded.append(node)
+            if len(expanded) >= limit:
+                break
+        if expanded:
+            return expanded[:limit]
 
     # Generic queries should fall back to actual evidence, not a master node whose
     # only incident edges may be synthetic overview topology.
-    evidence_graph = _evidentiary_graph(graph)
     evidence_nodes = sorted(evidence_graph.nodes, key=evidence_graph.degree, reverse=True)
     if evidence_nodes:
         return [str(evidence_nodes[0])]
