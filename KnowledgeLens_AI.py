@@ -16,7 +16,7 @@ from knowledgelens.graph import add_claims, add_master_links, create_graph, grap
 from knowledgelens.http_client import PinnedRequestError, post_json_pinned
 from knowledgelens.ingestion import prepare_chunks
 from knowledgelens.models import DocumentChunk
-from knowledgelens.parsing import parse_claims
+from knowledgelens.parsing import parse_claims, parse_master_concept_response
 from knowledgelens.persistence import deserialize_graph_state, serialize_graph_state
 from knowledgelens.retrieval import retrieve_graph_context
 from knowledgelens.security import EndpointPolicyError, env_flag, resolve_endpoint, validate_endpoint
@@ -107,7 +107,7 @@ def detect_master_concept(
         "\n\n".join(samples),
         temperature,
     )
-    concept = response.strip().strip('"\'`').splitlines()[0].strip()
+    concept = parse_master_concept_response(response)
     if not 2 <= len(concept) <= 80:
         return "Knowledge Base"
     return concept
@@ -530,7 +530,9 @@ if st.session_state.processing_complete or st.session_state.kg_graph.number_of_n
     readable_lines = []
     for claim in export_data["claims"]:
         source = claim["source"]
-        if not source and claim.get("legacy_sources"):
+        if claim.get("synthetic"):
+            source = "SYNTHETIC TOPOLOGY · non-evidentiary"
+        elif not source and claim.get("legacy_sources"):
             source = "legacy candidates: " + ", ".join(claim["legacy_sources"])
         source = source or "unknown source"
         location = f"p.{claim['page']}" if claim["page"] is not None else f"chunk {claim['chunk_index']}"
