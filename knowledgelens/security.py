@@ -83,15 +83,18 @@ def resolve_endpoint(base_url: str) -> ValidatedEndpoint:
                 )
             continue
 
-        if address.is_private or address.is_link_local:
+        # Treat every non-global address as internal/shared space. This includes
+        # RFC1918, link-local, IPv6 local ranges, and 100.64.0.0/10 CGNAT/shared
+        # address space, which ipaddress does not classify as `is_private`.
+        if not address.is_global:
             if not allow_private:
                 raise EndpointPolicyError(
-                    "Private or link-local endpoints are blocked by default. Set "
-                    "KNOWLEDGELENS_ALLOW_PRIVATE_ENDPOINTS=1 only on a trusted self-hosted deployment."
+                    "Private, link-local, shared, or otherwise non-global endpoints are blocked by default. "
+                    "Set KNOWLEDGELENS_ALLOW_PRIVATE_ENDPOINTS=1 only on a trusted self-hosted deployment."
                 )
             continue
 
-        # Any public address makes plaintext HTTP unsafe, regardless of local/private opt-ins.
+        # Any globally routable address makes plaintext HTTP unsafe, regardless of opt-ins.
         http_safe = False
 
     if parsed.scheme == "http" and not http_safe:
