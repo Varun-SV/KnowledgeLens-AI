@@ -74,7 +74,7 @@ def _split_oversized(text: str, max_chars: int, overlap: int) -> Iterable[str]:
 
 
 def chunk_section(text: str, max_chars: int = 3200, overlap: int = 240) -> list[str]:
-    """Chunk text without flattening source-code/YAML line structure or indentation."""
+    """Chunk text while preserving structure and avoiding duplication at safe block boundaries."""
     blocks = _split_blocks(text)
     if not blocks:
         stripped = text.replace("\r\n", "\n").replace("\r", "\n").strip("\n")
@@ -97,11 +97,11 @@ def chunk_section(text: str, max_chars: int = 3200, overlap: int = 240) -> list[
 
         if current:
             chunks.append(current.strip("\n"))
-        prefix = current[-overlap:] if current and overlap else ""
-        current = f"{prefix}\n\n{block}" if prefix else block
-        if len(current) > max_chars:
-            chunks.extend(_split_oversized(current, max_chars, overlap))
-            current = ""
+
+        # A blank-line/block boundary is already a safe semantic split. Do not
+        # copy the prior chunk's suffix into this block: doing so can cause a
+        # complete claim to be extracted twice from adjacent LLM requests.
+        current = block
 
     if current:
         chunks.append(current.strip("\n"))
