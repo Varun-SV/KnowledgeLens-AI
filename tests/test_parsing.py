@@ -44,6 +44,13 @@ def test_master_concept_parser_accepts_markdown_fences_and_blank_lines():
     assert parse_master_concept_response("\n`Knowledge Graphs`\n") == "Knowledge Graphs"
 
 
+def test_master_concept_parser_strips_common_explanatory_prefixes():
+    assert parse_master_concept_response("The central concept is Machine Learning") == "Machine Learning"
+    assert parse_master_concept_response("Topic: Knowledge Graphs") == "Knowledge Graphs"
+    assert parse_master_concept_response("Master concept: Distributed Systems") == "Distributed Systems"
+    assert parse_master_concept_response("```text\nTopic: Retrieval Augmented Generation\n```") == "Retrieval Augmented Generation"
+
+
 def test_markdown_fence_stripping_handles_large_whitespace_without_regex():
     chunk = DocumentChunk(source="x.md", text="x", chunk_index=1)
     payload = '```json\n{"subject":"AI","relation":"uses","object":"GPU"}\n```' + (" " * 100_000)
