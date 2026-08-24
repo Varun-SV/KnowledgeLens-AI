@@ -133,7 +133,7 @@ def retrieve_graph_context(graph: nx.MultiDiGraph, query: str, max_chars: int = 
                     continue
                 if 1 < len(path) <= 6:
                     lines.append(f"[graph path] {' -- '.join(map(str, path))}")
-                    for left, right in zip(path, path[1:]):
+                    for left, right in zip(path, path[1:], strict=True):
                         _append_claims_between(graph, str(left), str(right), lines, seen)
 
     if not lines:
