@@ -48,6 +48,20 @@ def score_node(query: str, node: str) -> float:
     return score
 
 
+def _is_evidentiary(data: dict) -> bool:
+    return not bool(data.get("synthetic", False))
+
+
+def _evidentiary_graph(graph: nx.MultiDiGraph) -> nx.Graph:
+    simple = nx.Graph()
+    simple.add_edges_from(
+        (subject, obj)
+        for subject, obj, data in graph.edges(data=True)
+        if _is_evidentiary(data)
+    )
+    return simple
+
+
 def relevant_nodes(graph: nx.MultiDiGraph, query: str, limit: int = 5) -> list[str]:
     ranked = sorted(
         ((score_node(query, str(node)), str(node)) for node in graph.nodes),
@@ -58,14 +72,17 @@ def relevant_nodes(graph: nx.MultiDiGraph, query: str, limit: int = 5) -> list[s
     if selected:
         return selected
 
+    # Generic queries should fall back to actual evidence, not a master node whose
+    # only incident edges may be synthetic overview topology.
+    evidence_graph = _evidentiary_graph(graph)
+    evidence_nodes = sorted(evidence_graph.nodes, key=evidence_graph.degree, reverse=True)
+    if evidence_nodes:
+        return [str(evidence_nodes[0])]
+
     masters = [node for node in graph.nodes if graph.nodes[node].get("type") == "master"]
     if masters:
         return [str(masters[0])]
     return [str(node) for node in sorted(graph.nodes, key=graph.degree, reverse=True)[:1]]
-
-
-def _is_evidentiary(data: dict) -> bool:
-    return not bool(data.get("synthetic", False))
 
 
 def _claim_line(subject: str, obj: str, data: dict) -> str:
@@ -85,21 +102,40 @@ def _claim_line(subject: str, obj: str, data: dict) -> str:
     return f"[{source} · {location}{confidence_text}] {subject} --[{relation}]--> {obj}{evidence_text}"
 
 
-def _append_claims_between(
+def _claims_between(
     graph: nx.MultiDiGraph,
     left: str,
     right: str,
-    lines: list[str],
-    seen: set[tuple[str, str, str]],
-) -> None:
+) -> list[tuple[tuple[str, str, str], str]]:
+    claims: list[tuple[tuple[str, str, str], str]] = []
     for subject, obj in ((left, right), (right, left)):
         for key, data in graph.get_edge_data(subject, obj, default={}).items():
             if not _is_evidentiary(data):
                 continue
             marker = (str(subject), str(obj), str(key))
-            if marker not in seen:
-                lines.append(_claim_line(str(subject), str(obj), data))
-                seen.add(marker)
+            claims.append((marker, _claim_line(str(subject), str(obj), data)))
+    return claims
+
+
+def _incident_claims(graph: nx.MultiDiGraph, node: str) -> list[tuple[tuple[str, str, str], str]]:
+    claims: list[tuple[tuple[str, str, str], str]] = []
+    for subject, obj, key, data in graph.out_edges(node, keys=True, data=True):
+        if _is_evidentiary(data):
+            marker = (str(subject), str(obj), str(key))
+            claims.append((marker, _claim_line(str(subject), str(obj), data)))
+    for subject, obj, key, data in graph.in_edges(node, keys=True, data=True):
+        if _is_evidentiary(data):
+            marker = (str(subject), str(obj), str(key))
+            claims.append((marker, _claim_line(str(subject), str(obj), data)))
+    return claims
+
+
+def _append_complete_line(lines: list[str], line: str, used_chars: int, max_chars: int) -> tuple[int, bool]:
+    extra = len(line) + (1 if lines else 0)
+    if used_chars + extra > max_chars:
+        return used_chars, False
+    lines.append(line)
+    return used_chars + extra, True
 
 
 def retrieve_graph_context(graph: nx.MultiDiGraph, query: str, max_chars: int = 9000) -> str:
@@ -107,33 +143,14 @@ def retrieve_graph_context(graph: nx.MultiDiGraph, query: str, max_chars: int = 
         return "No graph context is available."
 
     seeds = relevant_nodes(graph, query)
+    simple = _evidentiary_graph(graph)
     lines: list[str] = []
     seen: set[tuple[str, str, str]] = set()
+    used_chars = 0
 
-    for node in seeds:
-        for subject, obj, key, data in graph.out_edges(node, keys=True, data=True):
-            if not _is_evidentiary(data):
-                continue
-            marker = (str(subject), str(obj), str(key))
-            if marker not in seen:
-                lines.append(_claim_line(str(subject), str(obj), data))
-                seen.add(marker)
-        for subject, obj, key, data in graph.in_edges(node, keys=True, data=True):
-            if not _is_evidentiary(data):
-                continue
-            marker = (str(subject), str(obj), str(key))
-            if marker not in seen:
-                lines.append(_claim_line(str(subject), str(obj), data))
-                seen.add(marker)
-
-    simple = nx.Graph()
-    simple.add_nodes_from(graph.nodes)
-    simple.add_edges_from(
-        (subject, obj)
-        for subject, obj, data in graph.edges(data=True)
-        if _is_evidentiary(data)
-    )
-
+    # Connecting paths are the highest-value context for multi-entity questions, so
+    # reserve the front of the budget for them before any high-degree neighborhood
+    # can consume the entire window.
     if len(seeds) >= 2:
         for index, source in enumerate(seeds):
             for target in seeds[index + 1 :]:
@@ -141,12 +158,42 @@ def retrieve_graph_context(graph: nx.MultiDiGraph, query: str, max_chars: int = 
                     path = nx.shortest_path(simple, source, target)
                 except (nx.NetworkXNoPath, nx.NodeNotFound):
                     continue
-                if 1 < len(path) <= 6:
-                    lines.append(f"[graph path] {' -- '.join(map(str, path))}")
-                    for left, right in zip(path, path[1:], strict=False):
-                        _append_claims_between(graph, str(left), str(right), lines, seen)
+                if not 1 < len(path) <= 6:
+                    continue
+
+                path_line = f"[graph path] {' -- '.join(map(str, path))}"
+                used_chars, _ = _append_complete_line(lines, path_line, used_chars, max_chars)
+                for left, right in zip(path, path[1:], strict=False):
+                    for marker, claim_line in _claims_between(graph, str(left), str(right)):
+                        if marker in seen:
+                            continue
+                        next_used, appended = _append_complete_line(lines, claim_line, used_chars, max_chars)
+                        if appended:
+                            used_chars = next_used
+                            seen.add(marker)
+
+    # Then round-robin seed neighborhoods so one very high-degree entity cannot
+    # starve the remaining selected entities. Never cut a claim line mid-citation.
+    buckets = [_incident_claims(graph, node) for node in seeds]
+    positions = [0] * len(buckets)
+    while True:
+        had_candidate = False
+        for bucket_index, bucket in enumerate(buckets):
+            while positions[bucket_index] < len(bucket):
+                marker, claim_line = bucket[positions[bucket_index]]
+                positions[bucket_index] += 1
+                if marker in seen:
+                    continue
+                had_candidate = True
+                next_used, appended = _append_complete_line(lines, claim_line, used_chars, max_chars)
+                if appended:
+                    used_chars = next_used
+                    seen.add(marker)
+                break
+        if not had_candidate:
+            break
 
     if not lines:
         return "No specific source-backed graph connections were found for the query."
 
-    return "\n".join(lines)[:max_chars]
+    return "\n".join(lines)
