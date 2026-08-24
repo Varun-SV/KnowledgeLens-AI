@@ -7,6 +7,10 @@ from typing import Any
 
 from .models import Claim, DocumentChunk
 
+_IDENTIFIER_PUNCTUATION = frozenset("+#._-/:@")
+_TRAILING_DECORATIVE_PUNCTUATION = "._-/@:"
+_LEADING_DECORATIVE_PUNCTUATION = "_-/ :"
+
 
 def _strip_markdown_fence(text: str) -> str:
     cleaned = text.strip()
@@ -28,6 +32,22 @@ def _strip_markdown_fence(text: str) -> str:
     return trimmed.strip()
 
 
+def _canonicalize_label(display: str) -> str:
+    """Create a Unicode-aware key without erasing technology/identifier punctuation."""
+    folded = unicodedata.normalize("NFKC", display).casefold()
+    chars = [char if char.isalnum() or char in _IDENTIFIER_PUNCTUATION else " " for char in folded]
+
+    tokens: list[str] = []
+    for raw_token in "".join(chars).split():
+        # Periods, slashes, colons, etc. are useful *inside* identifiers (node.js,
+        # C++/CLI, namespace::type) but are commonly decorative at the end of prose.
+        token = raw_token.rstrip(_TRAILING_DECORATIVE_PUNCTUATION)
+        token = token.lstrip(_LEADING_DECORATIVE_PUNCTUATION)
+        if token and any(char.isalnum() for char in token):
+            tokens.append(token)
+    return " ".join(tokens)
+
+
 def normalize_entity(raw: Any) -> tuple[str, str] | None:
     if raw is None:
         return None
@@ -40,9 +60,7 @@ def normalize_entity(raw: Any) -> tuple[str, str] | None:
     if display.casefold() in stopwords:
         return None
 
-    folded = unicodedata.normalize("NFKC", display).casefold()
-    canonical_chars = [char if char.isalnum() else " " for char in folded]
-    canonical = " ".join("".join(canonical_chars).split())
+    canonical = _canonicalize_label(display)
     if not canonical:
         return None
     return canonical, display
