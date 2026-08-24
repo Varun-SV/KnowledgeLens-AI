@@ -32,7 +32,7 @@ def _strip_markdown_fence(text: str) -> str:
     return trimmed.strip()
 
 
-def _canonicalize_label(display: str) -> str:
+def canonicalize_label(display: str) -> str:
     """Create a Unicode-aware key without erasing technology/identifier punctuation."""
     folded = unicodedata.normalize("NFKC", display).casefold()
     chars = [char if char.isalnum() or char in _IDENTIFIER_PUNCTUATION else " " for char in folded]
@@ -60,10 +60,27 @@ def normalize_entity(raw: Any) -> tuple[str, str] | None:
     if display.casefold() in stopwords:
         return None
 
-    canonical = _canonicalize_label(display)
+    canonical = canonicalize_label(display)
     if not canonical:
         return None
     return canonical, display
+
+
+def parse_master_concept_response(text: str) -> str:
+    """Return the first non-empty concept line, tolerating common Markdown fences."""
+    cleaned = text.strip()
+    if cleaned.startswith("```"):
+        first_newline = cleaned.find("\n")
+        if first_newline != -1:
+            cleaned = cleaned[first_newline + 1 :].rstrip()
+            if cleaned.endswith("```"):
+                cleaned = cleaned[:-3].rstrip()
+
+    for raw_line in cleaned.splitlines():
+        concept = raw_line.strip().strip("\"'`").strip()
+        if concept:
+            return concept
+    return ""
 
 
 def _coerce_confidence(value: Any) -> float | None:
