@@ -63,6 +63,19 @@ def test_synthetic_master_links_do_not_count_as_sources():
     assert export["sources"] == {"perf.pdf": 1}
 
 
+def test_synthetic_master_links_do_not_inflate_claim_totals():
+    graph, node_map = create_graph("System")
+    add_claims(graph, node_map, [Claim("Cache", "reduces", "Latency", "perf.pdf", 1)])
+    add_master_links(graph, node_map, "System", [("Cache", "includes"), ("Latency", "covers")])
+
+    export = graph_to_export(graph)
+
+    assert graph.number_of_edges() == 3
+    assert export["stats"]["claims"] == 1
+    assert export["stats"]["topology_edges"] == 2
+    assert export["stats"]["edges_total"] == 3
+
+
 def test_migrated_legacy_sources_remain_visible_in_source_totals():
     graph = nx.MultiDiGraph()
     graph.add_node("A", type="master")
