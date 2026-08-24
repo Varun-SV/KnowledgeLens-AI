@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import hashlib
+from collections import Counter, defaultdict
 from collections.abc import Iterable
 
 from pypdf import PdfReader
@@ -106,12 +108,61 @@ def chunk_section(text: str, max_chars: int = 3200, overlap: int = 240) -> list[
     return chunks
 
 
+def _uploaded_file_digest(uploaded_file) -> str:
+    """Return a stable short content digest without changing the file's read position."""
+    if hasattr(uploaded_file, "getvalue"):
+        raw = uploaded_file.getvalue()
+    else:
+        try:
+            position = uploaded_file.tell()
+        except (AttributeError, OSError):
+            position = None
+        uploaded_file.seek(0)
+        raw = uploaded_file.read()
+        if position is not None:
+            uploaded_file.seek(position)
+    if isinstance(raw, str):
+        raw = raw.encode("utf-8")
+    return hashlib.sha256(bytes(raw)).hexdigest()[:10]
+
+
+def _source_labels(uploaded_files) -> list[str]:
+    """Keep normal filenames readable while disambiguating duplicate basenames stably."""
+    files = list(uploaded_files)
+    name_counts = Counter(str(uploaded_file.name).casefold() for uploaded_file in files)
+    digests = [_uploaded_file_digest(uploaded_file) for uploaded_file in files]
+    duplicate_content_counts = Counter(
+        (str(uploaded_file.name).casefold(), digest)
+        for uploaded_file, digest in zip(files, digests, strict=True)
+        if name_counts[str(uploaded_file.name).casefold()] > 1
+    )
+    occurrence: defaultdict[tuple[str, str], int] = defaultdict(int)
+
+    labels: list[str] = []
+    for uploaded_file, digest in zip(files, digests, strict=True):
+        name = str(uploaded_file.name)
+        folded_name = name.casefold()
+        if name_counts[folded_name] == 1:
+            labels.append(name)
+            continue
+
+        key = (folded_name, digest)
+        if duplicate_content_counts[key] > 1:
+            occurrence[key] += 1
+            labels.append(f"{name} · {digest}-{occurrence[key]}")
+        else:
+            labels.append(f"{name} · {digest}")
+    return labels
+
+
 def prepare_chunks(uploaded_files) -> tuple[list[DocumentChunk], list[str]]:
+    files = list(uploaded_files)
+    source_labels = _source_labels(files)
     chunks: list[DocumentChunk] = []
     warnings: list[str] = []
     global_index = 0
 
-    for uploaded_file in uploaded_files:
+    for uploaded_file, source_label in zip(files, source_labels, strict=True):
         try:
             sections = extract_sections_from_file(uploaded_file)
         except Exception as exc:
@@ -127,7 +178,7 @@ def prepare_chunks(uploaded_files) -> tuple[list[DocumentChunk], list[str]]:
                 global_index += 1
                 chunks.append(
                     DocumentChunk(
-                        source=uploaded_file.name,
+                        source=source_label,
                         text=piece,
                         chunk_index=global_index,
                         page=page,
