@@ -1,0 +1,181 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <meta name="theme-color" content="#060A10" />
+  <meta name="description" content="KnowledgeLens AI turns documents and code into source-backed knowledge graphs you can inspect, trace, ask, and export." />
+  <title>KnowledgeLens AI — Make knowledge inspectable</title>
+  <link rel="icon" href="mark.svg" type="image/svg+xml" />
+  <link rel="stylesheet" href="styles.css" />
+</head>
+<body>
+  <div class="noise" aria-hidden="true"></div>
+  <header class="site-header">
+    <a class="brand" href="#top" aria-label="KnowledgeLens AI home">
+      <img src="mark.svg" alt="" />
+      <span>KnowledgeLens <b>AI</b></span>
+    </a>
+    <nav aria-label="Primary navigation">
+      <a href="#how">Trace</a>
+      <a href="#architecture">Architecture</a>
+      <a href="https://github.com/Varun-SV/KnowledgeLens-AI">GitHub</a>
+      <a class="nav-cta" href="https://knowledgelens.streamlit.app/">Open app ↗</a>
+    </nav>
+  </header>
+
+  <main id="top">
+    <section class="hero shell">
+      <div class="hero-copy reveal">
+        <p class="eyebrow"><span class="pulse"></span> Evidence graph workspace</p>
+        <h1>Don’t just ask your documents.<br><em>See what connects them.</em></h1>
+        <p class="lede">KnowledgeLens turns documents and source code into an explorable graph of entities, claims, relationships, and the evidence behind them.</p>
+        <div class="hero-actions">
+          <a class="button primary" href="https://knowledgelens.streamlit.app/">Build an evidence graph <span>↗</span></a>
+          <a class="button ghost" href="https://github.com/Varun-SV/KnowledgeLens-AI">View source <span>⌘</span></a>
+        </div>
+        <div class="trust-line" aria-label="Model compatibility">
+          <span>Local</span><i></i><span>Ollama</span><i></i><span>llama.cpp</span><i></i><span>OpenAI-compatible</span>
+        </div>
+      </div>
+
+      <div class="lens-demo reveal" aria-label="Interactive evidence graph demo">
+        <div class="demo-topbar">
+          <div><span class="status-dot"></span> LIVE KNOWLEDGE FIELD</div>
+          <div class="demo-hint">MOVE THE LENS</div>
+        </div>
+        <svg id="knowledge-field" viewBox="0 0 760 560" role="img" aria-label="Knowledge graph connecting documents, concepts, and claims">
+          <defs>
+            <filter id="glow" x="-50%" y="-50%" width="200%" height="200%">
+              <feGaussianBlur stdDeviation="6" result="blur" />
+              <feMerge><feMergeNode in="blur"/><feMergeNode in="SourceGraphic"/></feMerge>
+            </filter>
+            <clipPath id="lens-clip"><circle id="lens-clip-circle" cx="510" cy="245" r="112" /></clipPath>
+          </defs>
+          <g id="field-base"></g>
+          <g id="field-reveal" clip-path="url(#lens-clip)"></g>
+          <circle id="lens-ring" cx="510" cy="245" r="112" />
+          <circle id="lens-core" cx="510" cy="245" r="4" />
+        </svg>
+        <div class="evidence-readout" id="evidence-readout" aria-live="polite"></div>
+      </div>
+    </section>
+
+    <section class="manifesto shell reveal">
+      <p class="section-no">01 / THE DIFFERENCE</p>
+      <div class="manifesto-grid">
+        <h2>AI answers are easy.<br><span>Inspectable reasoning is harder.</span></h2>
+        <p>KnowledgeLens keeps the graph between you and the model. Every useful relationship can carry its own source, page or chunk, evidence, and confidence—so the answer is not the end of the trail.</p>
+      </div>
+    </section>
+
+    <section id="how" class="trace-section shell">
+      <div class="trace-head reveal">
+        <p class="section-no">02 / TRACE A THOUGHT</p>
+        <h2>Watch unstructured material become navigable knowledge.</h2>
+      </div>
+      <div class="trace-layout">
+        <div class="trace-rail" aria-hidden="true"><div class="trace-beam" id="trace-beam"></div></div>
+        <div class="trace-steps">
+          <article class="trace-step reveal">
+            <div class="step-meta">INGEST <b>01</b></div>
+            <h3>Bring the messy stuff.</h3>
+            <p>PDFs, Markdown, text, JSON, XML, and source code become source-aware chunks instead of one anonymous text blob.</p>
+            <div class="source-stack" aria-hidden="true"><span>spec.pdf</span><span>api.py</span><span>notes.md</span></div>
+          </article>
+          <article class="trace-step reveal">
+            <div class="step-meta">EXTRACT <b>02</b></div>
+            <h3>Turn prose into claims.</h3>
+            <p>The model extracts structured subject → relationship → object claims while carrying evidence and provenance forward.</p>
+            <code>{ "subject": "Cache", "relation": "reduces", "object": "Latency" }</code>
+          </article>
+          <article class="trace-step reveal">
+            <div class="step-meta">CONNECT <b>03</b></div>
+            <h3>Let relationships accumulate.</h3>
+            <p>Claims from different sources coexist instead of being flattened into one generic edge. Agreement, tension, and cross-document links become visible.</p>
+            <div class="mini-graph" aria-hidden="true"><i></i><i></i><i></i><i></i><i></i></div>
+          </article>
+          <article class="trace-step reveal">
+            <div class="step-meta">TRACE <b>04</b></div>
+            <h3>Follow the evidence backward.</h3>
+            <p>Hover a relationship to inspect exactly which source produced it and where the supporting evidence lives.</p>
+            <div class="citation">[architecture.pdf · p.12] Gateway → isolates → Provider Credentials</div>
+          </article>
+          <article class="trace-step reveal">
+            <div class="step-meta">ASK <b>05</b></div>
+            <h3>Ask through the graph.</h3>
+            <p>KnowledgeLens retrieves relevant entities, neighboring claims, and short graph paths before the LLM answers—rather than throwing the whole document pile at it.</p>
+            <blockquote>How does the gateway protect provider credentials?</blockquote>
+          </article>
+          <article class="trace-step reveal">
+            <div class="step-meta">EXPORT <b>06</b></div>
+            <h3>Keep the knowledge portable.</h3>
+            <p>Save the whole graph state, export the evidence graph as JSON, or keep a human-readable claim ledger.</p>
+            <div class="export-row"><span>graph_state.json</span><span>evidence_graph.json</span><span>claims.txt</span></div>
+          </article>
+        </div>
+      </div>
+    </section>
+
+    <section class="split-proof shell reveal">
+      <div class="proof-copy">
+        <p class="section-no">03 / PROOF, NOT FOG</p>
+        <h2>The edge is not the evidence.</h2>
+        <p>Many knowledge-graph demos can tell you that two things are connected. KnowledgeLens is moving toward something stricter: each claim remains its own inspectable object.</p>
+      </div>
+      <div class="ledger" role="table" aria-label="Example evidence claim ledger">
+        <div class="ledger-head" role="row"><span>RELATION</span><span>SOURCE</span><span>EVIDENCE</span></div>
+        <div class="ledger-row" role="row"><span><b>Cache</b> reduces Latency</span><span>perf.pdf · p.7</span><span>0.96</span></div>
+        <div class="ledger-row" role="row"><span><b>Cache</b> increases Staleness</span><span>risks.md · c.12</span><span>0.88</span></div>
+        <div class="ledger-row" role="row"><span><b>Invalidation</b> mitigates Staleness</span><span>design.py · c.31</span><span>0.91</span></div>
+        <div class="ledger-foot">THREE CLAIMS · THREE PROVENANCE CHAINS · ZERO SOURCE COLLAPSE</div>
+      </div>
+    </section>
+
+    <section class="model-band reveal" aria-label="Model flexibility">
+      <div class="model-marquee">
+        <span>YOUR MODEL</span><i>◉</i><span>YOUR ENDPOINT</span><i>◉</i><span>YOUR GRAPH</span><i>◉</i><span>LOCAL OR CLOUD</span><i>◉</i><span>OPENAI-COMPATIBLE</span><i>◉</i>
+      </div>
+      <p>KnowledgeLens is provider-neutral by design. Use a trusted local deployment with Ollama or llama.cpp, or connect an OpenAI-compatible cloud endpoint.</p>
+    </section>
+
+    <section id="architecture" class="architecture shell reveal">
+      <div>
+        <p class="section-no">04 / ARCHITECTURE</p>
+        <h2>A visible pipeline.<br>No magic tunnel.</h2>
+        <p>The architecture mirrors the user promise: preserve structure, preserve provenance, retrieve narrowly, and make the output portable.</p>
+      </div>
+      <div class="arch-map" aria-label="KnowledgeLens architecture flow">
+        <span>DOCUMENTS</span><b>→</b><span>CHUNKS</span><b>→</b><span>CLAIMS</span><b>→</b><span>GRAPH</span><b>→</b><span>RETRIEVAL</span><b>→</b><span>LLM</span>
+        <div class="arch-under"><i>SOURCE</i><i>PAGE / CHUNK</i><i>EVIDENCE</i><i>CONFIDENCE</i></div>
+      </div>
+    </section>
+
+    <section class="oss shell reveal">
+      <div class="oss-mark"><img src="mark.svg" alt="" /></div>
+      <div>
+        <p class="section-no">05 / OPEN SOURCE</p>
+        <h2>Inspect the tool that helps you inspect knowledge.</h2>
+        <p>MIT licensed. Python + Streamlit. Built around NetworkX, PyVis, pypdf, and OpenAI-compatible APIs.</p>
+      </div>
+      <a class="button ghost" href="https://github.com/Varun-SV/KnowledgeLens-AI">Explore the repository ↗</a>
+    </section>
+
+    <section class="final-cta shell reveal">
+      <p class="eyebrow"><span class="pulse"></span> MAKE THE CONNECTION VISIBLE</p>
+      <h2>Stop searching through documents.<br><em>Start tracing knowledge.</em></h2>
+      <div class="hero-actions">
+        <a class="button primary" href="https://knowledgelens.streamlit.app/">Open KnowledgeLens <span>↗</span></a>
+        <a class="button ghost" href="https://github.com/Varun-SV/KnowledgeLens-AI">Star on GitHub <span>☆</span></a>
+      </div>
+    </section>
+  </main>
+
+  <footer class="site-footer shell">
+    <a class="brand" href="#top"><img src="mark.svg" alt="" /><span>KnowledgeLens <b>AI</b></span></a>
+    <p>Open-source evidence graph tooling.</p>
+    <span>MIT · 2026</span>
+  </footer>
+  <script src="app.js"></script>
+</body>
+</html>

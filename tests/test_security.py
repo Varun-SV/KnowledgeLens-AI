@@ -1,0 +1,36 @@
+import socket
+
+import pytest
+
+from knowledgelens.security import EndpointPolicyError, validate_endpoint
+
+
+def test_blocks_localhost_by_default(monkeypatch):
+    monkeypatch.delenv("KNOWLEDGELENS_ALLOW_LOCAL_ENDPOINTS", raising=False)
+    with pytest.raises(EndpointPolicyError):
+        validate_endpoint("http://localhost:11434")
+
+
+def test_allows_localhost_with_explicit_opt_in(monkeypatch):
+    monkeypatch.setenv("KNOWLEDGELENS_ALLOW_LOCAL_ENDPOINTS", "1")
+    assert validate_endpoint("http://localhost:11434") == "http://localhost:11434"
+
+
+def test_blocks_private_resolved_address(monkeypatch):
+    monkeypatch.delenv("KNOWLEDGELENS_ALLOW_PRIVATE_ENDPOINTS", raising=False)
+    monkeypatch.setattr(
+        socket,
+        "getaddrinfo",
+        lambda *args, **kwargs: [(socket.AF_INET, socket.SOCK_STREAM, 6, "", ("10.0.0.8", 0))],
+    )
+    with pytest.raises(EndpointPolicyError):
+        validate_endpoint("https://internal.example")
+
+
+def test_allows_public_https(monkeypatch):
+    monkeypatch.setattr(
+        socket,
+        "getaddrinfo",
+        lambda *args, **kwargs: [(socket.AF_INET, socket.SOCK_STREAM, 6, "", ("93.184.216.34", 0))],
+    )
+    assert validate_endpoint("https://api.example.com") == "https://api.example.com"
