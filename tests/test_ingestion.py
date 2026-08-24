@@ -18,6 +18,15 @@ def test_chunking_preserves_line_structure_and_indentation():
     assert "print('hello')\n  indented = True" in joined
 
 
+def test_safe_block_boundaries_do_not_repeat_overlap_text():
+    first = "Alpha fully supports Beta."
+    second = "Gamma independently supports Delta."
+    chunks = chunk_section(f"{first}\n\n{second}", max_chars=40, overlap=20)
+
+    assert chunks == [first, second]
+    assert first[-20:] not in chunks[1]
+
+
 def test_unique_filename_keeps_readable_source_name():
     chunks, warnings = prepare_chunks([UploadedBytes("notes.md", b"Alpha connects to Beta")])
     assert warnings == []
