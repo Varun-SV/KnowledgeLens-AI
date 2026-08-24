@@ -153,12 +153,17 @@ def graph_to_export(graph: nx.MultiDiGraph) -> dict[str, Any]:
             if legacy_source:
                 source_counts[str(legacy_source)] += 1
 
+    evidentiary_claims = sum(1 for claim in claims if not claim["synthetic"])
+    topology_edges = sum(1 for claim in claims if claim["synthetic"])
+
     return {
         "schema_version": 2,
         "master_concept": masters[0] if masters else None,
         "stats": {
             "nodes": graph.number_of_nodes(),
-            "claims": graph.number_of_edges(),
+            "claims": evidentiary_claims,
+            "topology_edges": topology_edges,
+            "edges_total": len(claims),
             "sources": len(source_counts),
         },
         "entities": [
