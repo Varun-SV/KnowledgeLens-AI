@@ -4,21 +4,22 @@ import hashlib
 import json
 import os
 import tempfile
+from collections import defaultdict
 from pathlib import Path
 
 import networkx as nx
-import requests
 import streamlit as st
 import streamlit.components.v1 as components
 from pyvis.network import Network
 
 from knowledgelens.graph import add_claims, add_master_links, create_graph, graph_to_export, top_entities
+from knowledgelens.http_client import PinnedRequestError, post_json_pinned
 from knowledgelens.ingestion import prepare_chunks
 from knowledgelens.models import DocumentChunk
 from knowledgelens.parsing import parse_claims
 from knowledgelens.persistence import deserialize_graph_state, serialize_graph_state
 from knowledgelens.retrieval import retrieve_graph_context
-from knowledgelens.security import EndpointPolicyError, validate_endpoint
+from knowledgelens.security import EndpointPolicyError, env_flag, resolve_endpoint, validate_endpoint
 
 APP_VERSION = "0.2.0"
 
@@ -46,8 +47,7 @@ def call_llm_api(
     user_prompt: str,
     temperature: float = 0.1,
 ) -> str:
-    endpoint = validate_endpoint(base_url)
-    url = endpoint + "/v1/chat/completions"
+    endpoint = resolve_endpoint(base_url)
     headers = {"Content-Type": "application/json"}
     if api_key:
         headers["Authorization"] = f"Bearer {api_key}"
@@ -62,27 +62,19 @@ def call_llm_api(
         ],
     }
     try:
-        response = requests.post(
-            url,
-            headers=headers,
-            json=payload,
-            timeout=(10, 180),
-            allow_redirects=False,
-        )
-    except requests.RequestException as exc:
+        status_code, response_body = post_json_pinned(endpoint, payload, headers)
+    except PinnedRequestError as exc:
         raise RuntimeError(f"Could not reach the LLM endpoint: {exc}") from exc
 
-    if 300 <= response.status_code < 400:
+    if 300 <= status_code < 400:
         raise RuntimeError("The LLM endpoint returned a redirect. Redirects are blocked for credential safety.")
-    try:
-        response.raise_for_status()
-    except requests.HTTPError as exc:
-        detail = response.text[:400]
-        raise RuntimeError(f"LLM returned HTTP {response.status_code}: {detail}") from exc
+    if status_code >= 400:
+        detail = response_body.decode("utf-8", errors="replace")[:400]
+        raise RuntimeError(f"LLM returned HTTP {status_code}: {detail}")
 
     try:
-        payload = response.json()
-        return str(payload["choices"][0]["message"]["content"])
+        response_payload = json.loads(response_body)
+        return str(response_payload["choices"][0]["message"]["content"])
     except (ValueError, KeyError, IndexError, TypeError) as exc:
         raise RuntimeError("The endpoint returned an unexpected OpenAI-compatible response.") from exc
 
@@ -183,6 +175,17 @@ def generate_master_relations(
     return links
 
 
+def _parallel_edge_smooth(index: int, total: int) -> dict[str, object]:
+    if total <= 1:
+        return {"enabled": True, "type": "continuous"}
+    rank = index // 2
+    return {
+        "enabled": True,
+        "type": "curvedCW" if index % 2 == 0 else "curvedCCW",
+        "roundness": min(0.12 + rank * 0.08, 0.48),
+    }
+
+
 def visualize_graph(graph: nx.MultiDiGraph, height: int = 760) -> None:
     if graph.number_of_nodes() == 0:
         st.info("The graph is empty.")
@@ -214,7 +217,16 @@ def visualize_graph(graph: nx.MultiDiGraph, height: int = 760) -> None:
             borderWidthSelected=4,
         )
 
+    edge_totals: dict[frozenset[object], int] = defaultdict(int)
+    for subject, obj in graph.edges():
+        edge_totals[frozenset((subject, obj))] += 1
+    edge_positions: dict[frozenset[object], int] = defaultdict(int)
+
     for subject, obj, _key, data in graph.edges(keys=True, data=True):
+        pair = frozenset((subject, obj))
+        edge_index = edge_positions[pair]
+        edge_positions[pair] += 1
+
         relation = str(data.get("relation", "related to"))
         source = str(data.get("source") or "")
         legacy_sources = [str(item) for item in data.get("legacy_sources", []) if item]
@@ -228,6 +240,9 @@ def visualize_graph(graph: nx.MultiDiGraph, height: int = 760) -> None:
         title = f"{relation}\nSource: {source} · {location}"
         if evidence:
             title += f"\nEvidence: {evidence[:300]}"
+        if data.get("synthetic"):
+            title += "\nSynthetic overview link — not used as grounded chat evidence."
+
         network.add_edge(
             subject,
             obj,
@@ -235,6 +250,7 @@ def visualize_graph(graph: nx.MultiDiGraph, height: int = 760) -> None:
             title=title,
             color="rgba(126, 145, 180, 0.42)",
             arrows="to",
+            smooth=_parallel_edge_smooth(edge_index, edge_totals[pair]),
         )
 
     network.set_options(
@@ -260,7 +276,6 @@ def visualize_graph(graph: nx.MultiDiGraph, height: int = 760) -> None:
                     "dragView": True,
                     "dragNodes": True,
                 },
-                "edges": {"smooth": {"type": "continuous"}},
             }
         )
     )
@@ -278,6 +293,12 @@ def visualize_graph(graph: nx.MultiDiGraph, height: int = 760) -> None:
                 os.unlink(temp_path)
             except OSError:
                 pass
+
+
+def _state_upload_fingerprint(uploaded_state) -> str | None:
+    if uploaded_state is None:
+        return None
+    return hashlib.sha256(uploaded_state.getvalue()).hexdigest()
 
 
 st.set_page_config(page_title="KnowledgeLens AI", page_icon="◉", layout="wide")
@@ -320,7 +341,7 @@ with st.sidebar:
     if os.getenv("KNOWLEDGELENS_CUSTOM_ENDPOINT", "").strip():
         providers.append("Configured endpoint")
 
-    default_index = 0 if os.getenv("KNOWLEDGELENS_ALLOW_LOCAL_ENDPOINTS") else providers.index("OpenAI")
+    default_index = 0 if env_flag("KNOWLEDGELENS_ALLOW_LOCAL_ENDPOINTS") else providers.index("OpenAI")
     provider = st.selectbox("Provider", providers, index=default_index)
     base_url = configured_endpoint(provider)
     st.text_input(
@@ -359,22 +380,23 @@ with st.sidebar:
     st.divider()
     st.header("Persistence")
     uploaded_state = st.file_uploader("Load graph state", type=["json"], key="state_loader")
-    if uploaded_state is not None:
-        raw_state = uploaded_state.getvalue()
-        fingerprint = hashlib.sha256(raw_state).hexdigest()
-        if fingerprint != st.session_state.loaded_state_fingerprint:
-            try:
-                loaded, master, node_map = deserialize_graph_state(raw_state)
-                st.session_state.kg_graph = loaded
-                st.session_state.master_concept = master
-                st.session_state.node_canonical_map = node_map
-                st.session_state.processing_complete = True
-                st.session_state.chat_history = []
-                st.session_state.graph_revision += 1
-                st.session_state.loaded_state_fingerprint = fingerprint
-                st.success(f"Loaded {loaded.number_of_nodes()} nodes / {loaded.number_of_edges()} claims")
-            except Exception as exc:
-                st.error(f"Could not load graph state: {exc}")
+    current_state_fingerprint = _state_upload_fingerprint(uploaded_state)
+    if uploaded_state is None:
+        st.session_state.loaded_state_fingerprint = None
+    elif current_state_fingerprint != st.session_state.loaded_state_fingerprint:
+        try:
+            loaded, master, node_map = deserialize_graph_state(uploaded_state.getvalue())
+            st.session_state.kg_graph = loaded
+            st.session_state.master_concept = master
+            st.session_state.node_canonical_map = node_map
+            st.session_state.processing_complete = True
+            st.session_state.chat_history = []
+            st.session_state.graph_revision += 1
+            st.success(f"Loaded {loaded.number_of_nodes()} nodes / {loaded.number_of_edges()} claims")
+        except Exception as exc:
+            st.error(f"Could not load graph state: {exc}")
+        finally:
+            st.session_state.loaded_state_fingerprint = current_state_fingerprint
 
     if st.button("Clear workspace", use_container_width=True):
         st.session_state.kg_graph = nx.MultiDiGraph()
@@ -382,7 +404,7 @@ with st.sidebar:
         st.session_state.master_concept = None
         st.session_state.processing_complete = False
         st.session_state.chat_history = []
-        st.session_state.loaded_state_fingerprint = None
+        st.session_state.loaded_state_fingerprint = current_state_fingerprint
         st.session_state.graph_revision += 1
         st.rerun()
 
@@ -458,7 +480,7 @@ if st.button("Build evidence graph", type="primary", use_container_width=True):
     st.session_state.master_concept = master
     st.session_state.processing_complete = True
     st.session_state.chat_history = []
-    st.session_state.loaded_state_fingerprint = None
+    st.session_state.loaded_state_fingerprint = current_state_fingerprint
     st.session_state.graph_revision += 1
     status.empty()
     progress.empty()
@@ -525,7 +547,7 @@ if st.session_state.processing_complete or st.session_state.kg_graph.number_of_n
 
     st.divider()
     st.subheader("Ask the graph")
-    st.caption("Answers are constrained to retrieved graph claims and their source citations.")
+    st.caption("Answers are constrained to retrieved source-backed claims and their citations.")
 
     user_query = st.chat_input("How are these concepts connected? What evidence supports this claim?")
     if user_query:
@@ -540,6 +562,7 @@ if st.session_state.processing_complete or st.session_state.kg_graph.number_of_n
                     (
                         "Answer ONLY from the supplied KnowledgeLens graph context. "
                         "Every factual sentence must cite the bracketed source/location supporting it. "
+                        "Synthetic overview links are excluded from this context and must never be treated as evidence. "
                         "If the graph lacks enough evidence, say that clearly. Do not use outside knowledge."
                     ),
                     f"Graph context:\n{context}\n\nQuestion: {user_query}",
