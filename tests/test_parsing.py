@@ -1,5 +1,5 @@
 from knowledgelens.models import DocumentChunk
-from knowledgelens.parsing import normalize_entity, parse_claims
+from knowledgelens.parsing import normalize_entity, parse_claims, parse_master_concept_response
 
 
 def test_parse_json_claim_with_provenance():
@@ -36,6 +36,12 @@ def test_identifier_significant_punctuation_remains_distinct():
     assert normalize_entity(".NET")[0] == ".net"
     assert normalize_entity("Node.js")[0] == "node.js"
     assert normalize_entity("Attention.")[0] == "attention"
+
+
+def test_master_concept_parser_accepts_markdown_fences_and_blank_lines():
+    assert parse_master_concept_response("```\nMachine Learning\n```") == "Machine Learning"
+    assert parse_master_concept_response("```text\n\nDistributed Systems\n```") == "Distributed Systems"
+    assert parse_master_concept_response("\n`Knowledge Graphs`\n") == "Knowledge Graphs"
 
 
 def test_markdown_fence_stripping_handles_large_whitespace_without_regex():
