@@ -208,7 +208,7 @@ def visualize_graph(graph: nx.MultiDiGraph, height: int = 760) -> None:
         network.add_node(
             node,
             label=str(node),
-            title=f"{node}\n{degree} connected claims",
+            title=f"{node}\n{degree} connected graph edges",
             shape="star" if is_master else "dot",
             size=size,
             color="#FFB45C" if is_master else "#68E1FD",
@@ -386,13 +386,17 @@ with st.sidebar:
     elif current_state_fingerprint != st.session_state.loaded_state_fingerprint:
         try:
             loaded, master, node_map = deserialize_graph_state(uploaded_state.getvalue())
+            loaded_stats = graph_to_export(loaded)["stats"]
             st.session_state.kg_graph = loaded
             st.session_state.master_concept = master
             st.session_state.node_canonical_map = node_map
             st.session_state.processing_complete = True
             st.session_state.chat_history = []
             st.session_state.graph_revision += 1
-            st.success(f"Loaded {loaded.number_of_nodes()} nodes / {loaded.number_of_edges()} claims")
+            st.success(
+                f"Loaded {loaded.number_of_nodes()} nodes / {loaded_stats['claims']} source-backed claims"
+                f" / {loaded_stats['topology_edges']} topology edges"
+            )
         except Exception as exc:
             st.error(f"Could not load graph state: {exc}")
         finally:
@@ -475,6 +479,7 @@ if st.button("Build evidence graph", type="primary", use_container_width=True):
             links = [(node, "relates to") for node in candidates]
         add_master_links(graph, node_map, master, links)
 
+    build_stats = graph_to_export(graph)["stats"]
     st.session_state.kg_graph = graph
     st.session_state.node_canonical_map = node_map
     st.session_state.master_concept = master
@@ -489,8 +494,8 @@ if st.button("Build evidence graph", type="primary", use_container_width=True):
         st.error("The model did not produce usable claims. Try a stronger instruction-following model or inspect the source text.")
     else:
         st.success(
-            f"Built {graph.number_of_nodes()} nodes and {graph.number_of_edges()} source-traceable claims. "
-            f"{failures} chunks failed."
+            f"Built {graph.number_of_nodes()} nodes and {build_stats['claims']} source-traceable claims "
+            f"plus {build_stats['topology_edges']} topology edges. {failures} chunks failed."
         )
     st.rerun()
 
@@ -498,16 +503,20 @@ if st.session_state.processing_complete or st.session_state.kg_graph.number_of_n
     graph = st.session_state.kg_graph
     export_data = graph_to_export(graph)
     source_count = export_data["stats"]["sources"]
+    claim_count = export_data["stats"]["claims"]
 
     st.divider()
     c1, c2, c3, c4 = st.columns(4)
     c1.metric("Master concept", st.session_state.master_concept or "—")
     c2.metric("Entities", max(0, graph.number_of_nodes() - 1))
-    c3.metric("Claims", graph.number_of_edges())
+    c3.metric("Claims", claim_count)
     c4.metric("Sources", source_count)
 
     st.subheader("Explore the evidence graph")
-    st.caption("Hover an edge to see its source and evidence. Drag nodes, zoom, and trace how claims connect.")
+    st.caption(
+        f"Hover an edge to see its source and evidence. The graph also contains "
+        f"{export_data['stats']['topology_edges']} synthetic topology edges, which are never counted as claims."
+    )
     visualize_graph(graph)
 
     st.subheader("Export & continue later")
