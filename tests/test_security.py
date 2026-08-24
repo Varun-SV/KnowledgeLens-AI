@@ -38,6 +38,20 @@ def test_blocks_private_resolved_address(monkeypatch):
         validate_endpoint("https://internal.example")
 
 
+def test_shared_cgnat_space_requires_private_opt_in(monkeypatch):
+    monkeypatch.delenv("KNOWLEDGELENS_ALLOW_PRIVATE_ENDPOINTS", raising=False)
+    monkeypatch.setattr(
+        socket,
+        "getaddrinfo",
+        lambda *args, **kwargs: [(socket.AF_INET, socket.SOCK_STREAM, 6, "", ("100.64.0.8", 0))],
+    )
+    with pytest.raises(EndpointPolicyError, match="non-global"):
+        validate_endpoint("https://shared.example")
+
+    monkeypatch.setenv("KNOWLEDGELENS_ALLOW_PRIVATE_ENDPOINTS", "1")
+    assert validate_endpoint("https://shared.example") == "https://shared.example"
+
+
 def test_allows_public_https(monkeypatch):
     monkeypatch.setattr(
         socket,
