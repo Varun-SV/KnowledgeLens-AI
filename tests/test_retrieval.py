@@ -45,3 +45,27 @@ def test_mixed_direction_path_is_retrieved():
     assert "[graph path]" in context
     assert "X --[points to]--> A" in context
     assert "Z --[points to]--> B" in context
+
+
+def test_synthetic_overview_links_are_not_grounded_evidence():
+    graph = nx.MultiDiGraph()
+    graph.add_node("Knowledge Base", type="master")
+    graph.add_node("Topic")
+    graph.add_edge(
+        "Knowledge Base",
+        "Topic",
+        key="synthetic",
+        relation="includes",
+        source="KnowledgeLens",
+        page=None,
+        chunk_index=0,
+        evidence="Synthetic overview link generated from graph importance.",
+        confidence=None,
+        synthetic=True,
+    )
+
+    context = retrieve_graph_context(graph, "Knowledge Base")
+
+    assert "KnowledgeLens" not in context
+    assert "includes" not in context
+    assert "No specific source-backed graph connections" in context
