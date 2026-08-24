@@ -33,6 +33,21 @@ def test_short_entity_does_not_match_inside_unrelated_words():
     assert score_node("explain AI details", "AI") >= 3.0
 
 
+def test_retrieval_scoring_preserves_identifier_punctuation():
+    query = "Compare C++ performance with Rust"
+    assert score_node(query, "C++") > score_node(query, "C")
+    assert score_node(query, "C++") > score_node(query, "C#")
+
+    graph = nx.MultiDiGraph()
+    for node in ("C", "C++", "C#", "Rust"):
+        graph.add_node(node)
+    _edge(graph, "C++", "Rust", "cpp-rust", "compared with")
+    _edge(graph, "C", "Memory", "c-memory", "manages")
+    _edge(graph, "C#", ".NET", "cs-dotnet", "targets")
+
+    assert relevant_nodes(graph, "Explain C++")[:1] == ["C++"]
+
+
 def test_mixed_direction_path_is_retrieved():
     graph = nx.MultiDiGraph()
     for node in ("A", "X", "Y", "Z", "B"):
