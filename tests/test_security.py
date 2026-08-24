@@ -2,7 +2,7 @@ import socket
 
 import pytest
 
-from knowledgelens.security import EndpointPolicyError, validate_endpoint
+from knowledgelens.security import EndpointPolicyError, env_flag, resolve_endpoint, validate_endpoint
 
 
 def test_blocks_localhost_by_default(monkeypatch):
@@ -19,6 +19,12 @@ def test_allows_localhost_with_explicit_opt_in(monkeypatch):
         lambda *args, **kwargs: [(socket.AF_INET, socket.SOCK_STREAM, 6, "", ("127.0.0.1", 0))],
     )
     assert validate_endpoint("http://localhost:11434") == "http://localhost:11434"
+
+
+def test_falsey_local_flag_is_not_enabled(monkeypatch):
+    for value in ("0", "false", "no", "off", ""):
+        monkeypatch.setenv("KNOWLEDGELENS_ALLOW_LOCAL_ENDPOINTS", value)
+        assert env_flag("KNOWLEDGELENS_ALLOW_LOCAL_ENDPOINTS") is False
 
 
 def test_blocks_private_resolved_address(monkeypatch):
@@ -39,6 +45,21 @@ def test_allows_public_https(monkeypatch):
         lambda *args, **kwargs: [(socket.AF_INET, socket.SOCK_STREAM, 6, "", ("93.184.216.34", 0))],
     )
     assert validate_endpoint("https://api.example.com") == "https://api.example.com"
+
+
+def test_resolve_endpoint_retains_the_addresses_that_passed_policy(monkeypatch):
+    monkeypatch.setattr(
+        socket,
+        "getaddrinfo",
+        lambda *args, **kwargs: [
+            (socket.AF_INET, socket.SOCK_STREAM, 6, "", ("93.184.216.34", 0)),
+            (socket.AF_INET, socket.SOCK_STREAM, 6, "", ("93.184.216.35", 0)),
+        ],
+    )
+    endpoint = resolve_endpoint("https://api.example.com/base")
+    assert [str(address) for address in endpoint.addresses] == ["93.184.216.34", "93.184.216.35"]
+    assert endpoint.hostname == "api.example.com"
+    assert endpoint.base_path == "/base"
 
 
 def test_public_http_stays_blocked_when_local_opt_in_is_enabled(monkeypatch):
