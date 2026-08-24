@@ -78,10 +78,7 @@ def _node_link_graph(graph_data: dict[str, Any]) -> nx.Graph:
         return nx.node_link_graph(graph_data, edges="edges")
     if "links" in graph_data:
         return nx.node_link_graph(graph_data, edges="links")
-
-    copy = dict(graph_data)
-    copy["edges"] = []
-    return nx.node_link_graph(copy, edges="edges")
+    raise ValueError("Graph state is missing a supported edge collection ('edges' or legacy 'links').")
 
 
 def serialize_graph_state(
@@ -102,6 +99,16 @@ def deserialize_graph_state(raw: bytes | str) -> tuple[nx.MultiDiGraph, str | No
     if isinstance(raw, bytes):
         raw = raw.decode("utf-8")
     state = json.loads(raw)
+
+    schema_version = state.get("schema_version", 1)
+    if not isinstance(schema_version, int) or schema_version < 1:
+        raise ValueError("Graph state contains an invalid schema_version.")
+    if schema_version > STATE_SCHEMA_VERSION:
+        raise ValueError(
+            f"Graph state schema v{schema_version} is newer than this KnowledgeLens build supports "
+            f"(v{STATE_SCHEMA_VERSION})."
+        )
+
     graph_data = state.get("graph_data")
     if not isinstance(graph_data, dict):
         raise ValueError("Graph state does not contain valid graph_data.")
