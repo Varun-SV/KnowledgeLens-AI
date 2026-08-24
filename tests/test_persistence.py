@@ -1,6 +1,7 @@
 import json
 
 import networkx as nx
+import pytest
 
 from knowledgelens.persistence import deserialize_graph_state, migrate_legacy_graph, serialize_graph_state
 
@@ -52,3 +53,27 @@ def test_loader_accepts_legacy_links_field():
     loaded, master, _ = deserialize_graph_state(raw)
     assert master == "A"
     assert loaded.number_of_edges() == 1
+
+
+def test_loader_rejects_missing_edge_collection():
+    raw = json.dumps(
+        {
+            "schema_version": 2,
+            "master_concept": "A",
+            "graph_data": {"directed": True, "multigraph": True, "nodes": [{"id": "A"}]},
+        }
+    )
+    with pytest.raises(ValueError, match="edge collection"):
+        deserialize_graph_state(raw)
+
+
+def test_loader_rejects_newer_schema_versions():
+    raw = json.dumps(
+        {
+            "schema_version": 999,
+            "master_concept": "A",
+            "graph_data": {"directed": True, "multigraph": True, "nodes": [{"id": "A"}], "edges": []},
+        }
+    )
+    with pytest.raises(ValueError, match="newer"):
+        deserialize_graph_state(raw)
