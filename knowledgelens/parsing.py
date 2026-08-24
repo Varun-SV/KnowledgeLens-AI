@@ -10,6 +10,21 @@ from .models import Claim, DocumentChunk
 _IDENTIFIER_PUNCTUATION = frozenset("+#._-/:@")
 _TRAILING_DECORATIVE_PUNCTUATION = "._-/@:"
 _LEADING_DECORATIVE_PUNCTUATION = "_-/ :"
+_MASTER_CONCEPT_PREFIXES = (
+    "the central concept is ",
+    "the central concept: ",
+    "central concept is ",
+    "central concept: ",
+    "the main concept is ",
+    "main concept is ",
+    "master concept is ",
+    "master concept: ",
+    "the topic is ",
+    "topic is ",
+    "topic: ",
+    "concept is ",
+    "concept: ",
+)
 
 
 def _strip_markdown_fence(text: str) -> str:
@@ -66,8 +81,18 @@ def normalize_entity(raw: Any) -> tuple[str, str] | None:
     return canonical, display
 
 
+def _strip_master_concept_prefix(concept: str) -> str:
+    folded = concept.casefold()
+    for prefix in _MASTER_CONCEPT_PREFIXES:
+        if folded.startswith(prefix):
+            stripped = concept[len(prefix) :].strip()
+            if stripped:
+                return stripped
+    return concept
+
+
 def parse_master_concept_response(text: str) -> str:
-    """Return the first non-empty concept line, tolerating common Markdown fences."""
+    """Return a concise concept line, tolerating common fences and explanatory prefixes."""
     cleaned = text.strip()
     if cleaned.startswith("```"):
         first_newline = cleaned.find("\n")
@@ -79,7 +104,7 @@ def parse_master_concept_response(text: str) -> str:
     for raw_line in cleaned.splitlines():
         concept = raw_line.strip().strip("\"'`").strip()
         if concept:
-            return concept
+            return _strip_master_concept_prefix(concept)
     return ""
 
 
