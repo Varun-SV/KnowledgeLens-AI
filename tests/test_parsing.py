@@ -1,24 +1,35 @@
 from knowledgelens.models import DocumentChunk
-from knowledgelens.parsing import parse_claims
+from knowledgelens.parsing import normalize_entity, parse_claims
 
 
-def test_parse_structured_claims_preserves_provenance():
-    chunk = DocumentChunk(source="paper.pdf", text="", chunk_index=7, page=3)
+def test_parse_json_claim_with_provenance():
+    chunk = DocumentChunk(source="paper.pdf", text="x", chunk_index=3, page=7)
     claims = parse_claims(
-        '[{"subject":"Attention","relation":"enables","object":"Parallelism","evidence":"Layers can run in parallel.","confidence":0.93}]',
+        '[{"subject":"Attention","relation":"enables","object":"Parallel Training","evidence":"Supported","confidence":0.9}]',
         chunk,
     )
     assert len(claims) == 1
     claim = claims[0]
     assert claim.source == "paper.pdf"
-    assert claim.page == 3
-    assert claim.chunk_index == 7
-    assert claim.confidence == 0.93
+    assert claim.page == 7
+    assert claim.confidence == 0.9
 
 
-def test_parse_legacy_pipe_format_for_compatibility():
-    chunk = DocumentChunk(source="notes.txt", text="", chunk_index=1)
-    claims = parse_claims("Transformer | uses | Attention | supported here | 90", chunk)
+def test_parse_legacy_pipe_format():
+    chunk = DocumentChunk(source="notes.md", text="x", chunk_index=2)
+    claims = parse_claims("Cache | reduces | Latency | measured in tests | 95", chunk)
+    assert claims[0].confidence == 0.95
+    assert claims[0].evidence == "measured in tests"
+
+
+def test_unicode_entity_normalization_is_preserved():
+    assert normalize_entity("人工知能")[0] == "人工知能"
+    assert normalize_entity("Привет Мир")[0] == "привет мир"
+    assert normalize_entity("الذكاء الاصطناعي")[0] == "الذكاء الاصطناعي"
+
+
+def test_markdown_fence_stripping_handles_large_whitespace_without_regex():
+    chunk = DocumentChunk(source="x.md", text="x", chunk_index=1)
+    payload = '```json\n{"subject":"AI","relation":"uses","object":"GPU"}\n```' + (" " * 100_000)
+    claims = parse_claims(payload, chunk)
     assert len(claims) == 1
-    assert claims[0].relation == "uses"
-    assert claims[0].confidence == 0.9

@@ -12,7 +12,7 @@ from .parsing import normalize_entity
 
 def canonical_key(label: str) -> str:
     normalized = normalize_entity(label)
-    return normalized[0] if normalized else label.strip().lower()
+    return normalized[0] if normalized else label.strip().casefold()
 
 
 def create_graph(master_concept: str) -> tuple[nx.MultiDiGraph, dict[str, str]]:
@@ -130,6 +130,7 @@ def graph_to_export(graph: nx.MultiDiGraph) -> dict[str, Any]:
                 "relation": data.get("relation", "related to"),
                 "object": obj,
                 "source": data.get("source", ""),
+                "legacy_sources": list(data.get("legacy_sources", [])),
                 "page": data.get("page"),
                 "chunk_index": data.get("chunk_index"),
                 "evidence": data.get("evidence", ""),
@@ -140,7 +141,7 @@ def graph_to_export(graph: nx.MultiDiGraph) -> dict[str, Any]:
 
     source_counts: dict[str, int] = defaultdict(int)
     for claim in claims:
-        if claim["source"]:
+        if claim["source"] and not claim["synthetic"]:
             source_counts[claim["source"]] += 1
 
     return {

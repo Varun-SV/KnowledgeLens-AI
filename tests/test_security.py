@@ -13,6 +13,11 @@ def test_blocks_localhost_by_default(monkeypatch):
 
 def test_allows_localhost_with_explicit_opt_in(monkeypatch):
     monkeypatch.setenv("KNOWLEDGELENS_ALLOW_LOCAL_ENDPOINTS", "1")
+    monkeypatch.setattr(
+        socket,
+        "getaddrinfo",
+        lambda *args, **kwargs: [(socket.AF_INET, socket.SOCK_STREAM, 6, "", ("127.0.0.1", 0))],
+    )
     assert validate_endpoint("http://localhost:11434") == "http://localhost:11434"
 
 
@@ -34,3 +39,14 @@ def test_allows_public_https(monkeypatch):
         lambda *args, **kwargs: [(socket.AF_INET, socket.SOCK_STREAM, 6, "", ("93.184.216.34", 0))],
     )
     assert validate_endpoint("https://api.example.com") == "https://api.example.com"
+
+
+def test_public_http_stays_blocked_when_local_opt_in_is_enabled(monkeypatch):
+    monkeypatch.setenv("KNOWLEDGELENS_ALLOW_LOCAL_ENDPOINTS", "1")
+    monkeypatch.setattr(
+        socket,
+        "getaddrinfo",
+        lambda *args, **kwargs: [(socket.AF_INET, socket.SOCK_STREAM, 6, "", ("93.184.216.34", 0))],
+    )
+    with pytest.raises(EndpointPolicyError, match="HTTPS"):
+        validate_endpoint("http://api.example.com")

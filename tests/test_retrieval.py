@@ -1,27 +1,47 @@
-from knowledgelens.graph import add_claims, create_graph
-from knowledgelens.models import Claim
-from knowledgelens.retrieval import retrieve_graph_context
+import networkx as nx
+
+from knowledgelens.retrieval import retrieve_graph_context, score_node
 
 
-def test_retrieval_includes_evidence_and_source_location():
-    graph, node_map = create_graph("Transformers")
-    add_claims(
-        graph,
-        node_map,
-        [
-            Claim(
-                subject="Attention",
-                relation="enables",
-                object="Parallel Training",
-                source="paper.pdf",
-                chunk_index=2,
-                page=4,
-                evidence="Attention removes recurrent dependencies.",
-                confidence=0.9,
-            )
-        ],
+def _edge(graph, a, b, key, relation):
+    graph.add_edge(
+        a,
+        b,
+        key=key,
+        relation=relation,
+        source="doc.md",
+        page=None,
+        chunk_index=1,
+        evidence="evidence",
+        confidence=0.9,
+        synthetic=False,
     )
-    context = retrieve_graph_context(graph, "How does Attention enable parallel training?")
-    assert "paper.pdf · p.4" in context
-    assert "Attention --[enables]--> Parallel Training" in context
-    assert "Attention removes recurrent dependencies" in context
+
+
+def test_retrieval_includes_source_citation():
+    graph = nx.MultiDiGraph()
+    graph.add_node("Cache")
+    graph.add_node("Latency")
+    _edge(graph, "Cache", "Latency", "1", "reduces")
+    context = retrieve_graph_context(graph, "How does Cache affect Latency?")
+    assert "doc.md" in context
+    assert "Cache --[reduces]--> Latency" in context
+
+
+def test_short_entity_does_not_match_inside_unrelated_words():
+    assert score_node("explain the details", "AI") < 3.0
+    assert score_node("explain AI details", "AI") >= 3.0
+
+
+def test_mixed_direction_path_is_retrieved():
+    graph = nx.MultiDiGraph()
+    for node in ("A", "X", "Y", "Z", "B"):
+        graph.add_node(node)
+    _edge(graph, "X", "A", "xa", "points to")
+    _edge(graph, "X", "Y", "xy", "connects")
+    _edge(graph, "Z", "Y", "zy", "supports")
+    _edge(graph, "Z", "B", "zb", "points to")
+    context = retrieve_graph_context(graph, "Compare A and B")
+    assert "[graph path]" in context
+    assert "X --[points to]--> A" in context
+    assert "Z --[points to]--> B" in context

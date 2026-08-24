@@ -1,28 +1,49 @@
 from __future__ import annotations
 
-import re
 from difflib import SequenceMatcher
 
 import networkx as nx
 
 
-def _tokens(value: str) -> set[str]:
-    return {token for token in re.findall(r"[a-z0-9]+", value.lower()) if len(token) > 1}
+def _token_list(value: str) -> list[str]:
+    tokens: list[str] = []
+    current: list[str] = []
+    for char in value.casefold():
+        if char.isalnum():
+            current.append(char)
+        elif current:
+            tokens.append("".join(current))
+            current = []
+    if current:
+        tokens.append("".join(current))
+    return tokens
+
+
+def _contains_token_phrase(query: str, node: str) -> bool:
+    q_tokens = _token_list(query)
+    n_tokens = _token_list(node)
+    if not q_tokens or not n_tokens or len(n_tokens) > len(q_tokens):
+        return False
+    width = len(n_tokens)
+    return any(q_tokens[index : index + width] == n_tokens for index in range(len(q_tokens) - width + 1))
 
 
 def score_node(query: str, node: str) -> float:
-    q = query.lower().strip()
-    n = str(node).lower().strip()
+    q = query.casefold().strip()
+    n = str(node).casefold().strip()
     if not q or not n:
         return 0.0
+
     score = 0.0
-    if n in q:
+    if _contains_token_phrase(q, n):
         score += 3.0
-    q_tokens = _tokens(q)
-    n_tokens = _tokens(n)
+
+    q_tokens = set(_token_list(q))
+    n_tokens = set(_token_list(n))
     if q_tokens and n_tokens:
         overlap = len(q_tokens & n_tokens) / len(n_tokens)
         score += overlap * 2.0
+
     score += SequenceMatcher(None, q, n).ratio() * 0.75
     return score
 
@@ -44,7 +65,11 @@ def relevant_nodes(graph: nx.MultiDiGraph, query: str, limit: int = 5) -> list[s
 
 
 def _claim_line(subject: str, obj: str, data: dict) -> str:
-    source = data.get("source", "unknown source")
+    source = data.get("source") or "unknown source"
+    legacy_sources = [str(item) for item in data.get("legacy_sources", []) if item]
+    if source == "unknown source" and legacy_sources:
+        source = "legacy candidates: " + ", ".join(legacy_sources)
+
     page = data.get("page")
     chunk = data.get("chunk_index")
     location = f"p.{page}" if page is not None else f"chunk {chunk}"
@@ -58,6 +83,21 @@ def _claim_line(subject: str, obj: str, data: dict) -> str:
         f"[{source} · {location}{confidence_text}{synthetic}] "
         f"{subject} --[{relation}]--> {obj}{evidence_text}"
     )
+
+
+def _append_claims_between(
+    graph: nx.MultiDiGraph,
+    left: str,
+    right: str,
+    lines: list[str],
+    seen: set[tuple[str, str, str]],
+) -> None:
+    for subject, obj in ((left, right), (right, left)):
+        for key, data in graph.get_edge_data(subject, obj, default={}).items():
+            marker = (str(subject), str(obj), str(key))
+            if marker not in seen:
+                lines.append(_claim_line(str(subject), str(obj), data))
+                seen.add(marker)
 
 
 def retrieve_graph_context(graph: nx.MultiDiGraph, query: str, max_chars: int = 9000) -> str:
@@ -80,26 +120,21 @@ def retrieve_graph_context(graph: nx.MultiDiGraph, query: str, max_chars: int = 
                 lines.append(_claim_line(str(subject), str(obj), data))
                 seen.add(marker)
 
-    simple = nx.DiGraph()
+    simple = nx.Graph()
     simple.add_nodes_from(graph.nodes)
     simple.add_edges_from((u, v) for u, v in graph.edges())
+
     if len(seeds) >= 2:
-        for i, source in enumerate(seeds):
-            for target in seeds[i + 1 :]:
-                for candidate in ((source, target), (target, source)):
-                    try:
-                        path = nx.shortest_path(simple, candidate[0], candidate[1])
-                    except (nx.NetworkXNoPath, nx.NodeNotFound):
-                        continue
-                    if 1 < len(path) <= 6:
-                        lines.append(f"[graph path] {' -> '.join(map(str, path))}")
-                        for a, b in zip(path, path[1:]):
-                            for key, data in graph.get_edge_data(a, b, default={}).items():
-                                marker = (str(a), str(b), str(key))
-                                if marker not in seen:
-                                    lines.append(_claim_line(str(a), str(b), data))
-                                    seen.add(marker)
-                        break
+        for index, source in enumerate(seeds):
+            for target in seeds[index + 1 :]:
+                try:
+                    path = nx.shortest_path(simple, source, target)
+                except (nx.NetworkXNoPath, nx.NodeNotFound):
+                    continue
+                if 1 < len(path) <= 6:
+                    lines.append(f"[graph path] {' -- '.join(map(str, path))}")
+                    for left, right in zip(path, path[1:]):
+                        _append_claims_between(graph, str(left), str(right), lines, seen)
 
     if not lines:
         return "No specific graph connections were found for the query."

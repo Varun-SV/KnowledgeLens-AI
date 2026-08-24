@@ -1,138 +1,41 @@
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import tempfile
 from pathlib import Path
-from typing import Iterable
 
 import networkx as nx
 import requests
 import streamlit as st
 import streamlit.components.v1 as components
-from pypdf import PdfReader
 from pyvis.network import Network
 
-from knowledgelens.graph import (
-    add_claims,
-    add_master_links,
-    canonical_key,
-    create_graph,
-    graph_to_export,
-    top_entities,
-)
+from knowledgelens.graph import add_claims, add_master_links, create_graph, graph_to_export, top_entities
+from knowledgelens.ingestion import prepare_chunks
 from knowledgelens.models import DocumentChunk
 from knowledgelens.parsing import parse_claims
+from knowledgelens.persistence import deserialize_graph_state, serialize_graph_state
 from knowledgelens.retrieval import retrieve_graph_context
 from knowledgelens.security import EndpointPolicyError, validate_endpoint
 
 APP_VERSION = "0.2.0"
 
 
-def extract_sections_from_file(uploaded_file) -> list[tuple[int | None, str]]:
-    """Extract source sections while preserving PDF page provenance."""
-    uploaded_file.seek(0)
-    name = uploaded_file.name.lower()
+def configured_endpoint(provider: str) -> str:
+    """Resolve a user-selected provider to an operator-controlled endpoint."""
+    if provider == "Ollama / local":
+        return "http://localhost:11434"
+    if provider == "llama.cpp / local":
+        return "http://localhost:8080"
+    if provider == "OpenAI":
+        return "https://api.openai.com"
 
-    if name.endswith(".pdf"):
-        reader = PdfReader(uploaded_file)
-        sections: list[tuple[int | None, str]] = []
-        for page_number, page in enumerate(reader.pages, start=1):
-            try:
-                text = page.extract_text() or ""
-            except Exception:
-                text = ""
-            if text.strip():
-                sections.append((page_number, text))
-        return sections
-
-    raw = uploaded_file.read()
-    for encoding in ("utf-8", "utf-8-sig", "latin-1"):
-        try:
-            return [(None, raw.decode(encoding))]
-        except UnicodeDecodeError:
-            continue
-    return []
-
-
-def _split_oversized(text: str, max_chars: int, overlap: int) -> Iterable[str]:
-    start = 0
-    while start < len(text):
-        end = min(len(text), start + max_chars)
-        if end < len(text):
-            boundary = max(text.rfind(". ", start, end), text.rfind("\n", start, end))
-            if boundary > start + max_chars // 2:
-                end = boundary + 1
-        piece = text[start:end].strip()
-        if piece:
-            yield piece
-        if end >= len(text):
-            break
-        start = max(start + 1, end - overlap)
-
-
-def chunk_section(text: str, max_chars: int = 3200, overlap: int = 240) -> list[str]:
-    """Paragraph-aware chunking with a hard size ceiling and small overlap."""
-    cleaned = text.replace("\r", "\n")
-    paragraphs = [" ".join(p.split()) for p in cleaned.split("\n\n") if p.strip()]
-    if not paragraphs:
-        paragraphs = [" ".join(cleaned.split())]
-
-    chunks: list[str] = []
-    current = ""
-    for paragraph in paragraphs:
-        if len(paragraph) > max_chars:
-            if current:
-                chunks.append(current.strip())
-                current = ""
-            chunks.extend(_split_oversized(paragraph, max_chars, overlap))
-            continue
-
-        candidate = f"{current}\n\n{paragraph}".strip() if current else paragraph
-        if len(candidate) <= max_chars:
-            current = candidate
-        else:
-            if current:
-                chunks.append(current.strip())
-            prefix = current[-overlap:].strip() if current and overlap else ""
-            current = f"{prefix}\n\n{paragraph}".strip() if prefix else paragraph
-            if len(current) > max_chars:
-                chunks.extend(_split_oversized(current, max_chars, overlap))
-                current = ""
-
-    if current:
-        chunks.append(current.strip())
-    return chunks
-
-
-def prepare_chunks(uploaded_files) -> tuple[list[DocumentChunk], list[str]]:
-    chunks: list[DocumentChunk] = []
-    warnings: list[str] = []
-    global_index = 0
-
-    for uploaded_file in uploaded_files:
-        try:
-            sections = extract_sections_from_file(uploaded_file)
-        except Exception as exc:
-            warnings.append(f"{uploaded_file.name}: {exc}")
-            continue
-
-        if not sections:
-            warnings.append(f"{uploaded_file.name}: no extractable text found")
-            continue
-
-        for page, text in sections:
-            for piece in chunk_section(text):
-                global_index += 1
-                chunks.append(
-                    DocumentChunk(
-                        source=uploaded_file.name,
-                        text=piece,
-                        chunk_index=global_index,
-                        page=page,
-                    )
-                )
-    return chunks, warnings
+    configured = os.getenv("KNOWLEDGELENS_CUSTOM_ENDPOINT", "").strip()
+    if provider == "Configured endpoint" and configured:
+        return configured
+    raise EndpointPolicyError("No endpoint is configured for this provider.")
 
 
 def call_llm_api(
@@ -280,37 +183,6 @@ def generate_master_relations(
     return links
 
 
-def reconstruct_node_map(graph: nx.MultiDiGraph) -> dict[str, str]:
-    return {canonical_key(str(node)): str(node) for node in graph.nodes}
-
-
-def migrate_legacy_graph(graph: nx.Graph) -> nx.MultiDiGraph:
-    if isinstance(graph, nx.MultiDiGraph):
-        return graph
-
-    migrated = nx.MultiDiGraph()
-    migrated.add_nodes_from(graph.nodes(data=True))
-    for subject, obj, data in graph.edges(data=True):
-        relations = data.get("relations") or [data.get("relation") or "related to"]
-        sources = data.get("sources") or {data.get("source") or "Imported graph"}
-        if isinstance(sources, list):
-            sources = set(sources)
-        for relation in relations:
-            for source in sources:
-                migrated.add_edge(
-                    subject,
-                    obj,
-                    relation=relation,
-                    source=source,
-                    page=None,
-                    chunk_index=0,
-                    evidence="Imported from KnowledgeLens graph state v1.",
-                    confidence=None,
-                    synthetic=False,
-                )
-    return migrated
-
-
 def visualize_graph(graph: nx.MultiDiGraph, height: int = 760) -> None:
     if graph.number_of_nodes() == 0:
         st.info("The graph is empty.")
@@ -344,7 +216,11 @@ def visualize_graph(graph: nx.MultiDiGraph, height: int = 760) -> None:
 
     for subject, obj, _key, data in graph.edges(keys=True, data=True):
         relation = str(data.get("relation", "related to"))
-        source = str(data.get("source", "unknown"))
+        source = str(data.get("source") or "")
+        legacy_sources = [str(item) for item in data.get("legacy_sources", []) if item]
+        if not source and legacy_sources:
+            source = "legacy candidates: " + ", ".join(legacy_sources)
+        source = source or "unknown source"
         page = data.get("page")
         chunk = data.get("chunk_index")
         location = f"p.{page}" if page is not None else f"chunk {chunk}"
@@ -404,16 +280,6 @@ def visualize_graph(graph: nx.MultiDiGraph, height: int = 760) -> None:
                 pass
 
 
-def export_state(graph: nx.MultiDiGraph) -> str:
-    payload = {
-        "schema_version": 2,
-        "master_concept": st.session_state.master_concept,
-        "node_canonical_map": st.session_state.node_canonical_map,
-        "graph_data": nx.node_link_data(graph),
-    }
-    return json.dumps(payload, ensure_ascii=False, indent=2)
-
-
 st.set_page_config(page_title="KnowledgeLens AI", page_icon="◉", layout="wide")
 st.markdown(
     """
@@ -445,19 +311,27 @@ if "chat_history" not in st.session_state:
     st.session_state.chat_history = []
 if "graph_revision" not in st.session_state:
     st.session_state.graph_revision = 0
+if "loaded_state_fingerprint" not in st.session_state:
+    st.session_state.loaded_state_fingerprint = None
 
 with st.sidebar:
     st.header("Model connection")
-    provider = st.selectbox("Preset", ["Ollama / local", "llama.cpp / local", "OpenAI-compatible cloud", "Custom"])
-    preset_urls = {
-        "Ollama / local": "http://localhost:11434",
-        "llama.cpp / local": "http://localhost:8080",
-        "OpenAI-compatible cloud": "https://api.openai.com",
-        "Custom": "https://",
-    }
-    base_url = st.text_input("Base URL", value=preset_urls[provider], help="KnowledgeLens appends /v1/chat/completions")
+    providers = ["Ollama / local", "llama.cpp / local", "OpenAI"]
+    if os.getenv("KNOWLEDGELENS_CUSTOM_ENDPOINT", "").strip():
+        providers.append("Configured endpoint")
+
+    default_index = 0 if os.getenv("KNOWLEDGELENS_ALLOW_LOCAL_ENDPOINTS") else providers.index("OpenAI")
+    provider = st.selectbox("Provider", providers, index=default_index)
+    base_url = configured_endpoint(provider)
+    st.text_input(
+        "Endpoint",
+        value=base_url,
+        disabled=True,
+        help="Custom endpoints are configured by the operator via KNOWLEDGELENS_CUSTOM_ENDPOINT.",
+    )
     api_key = st.text_input("API key", type="password", help="Kept in this Streamlit session; not written to graph exports.")
-    model_name = st.text_input("Model", value="llama3.1")
+    default_model = "llama3.1" if provider != "OpenAI" else "gpt-4o-mini"
+    model_name = st.text_input("Model", value=default_model)
     temperature = st.slider("Temperature", 0.0, 1.0, 0.1, 0.05)
 
     try:
@@ -470,25 +344,37 @@ with st.sidebar:
     st.header("Graph extraction")
     auto_detect = st.checkbox("Auto-detect master concept", value=True)
     manual_master = st.text_input("Master concept", disabled=auto_detect)
-    master_link_count = st.slider("Overview links", 3, 20, 10, help="Synthetic links from the master concept to highly connected entities.")
-    custom_focus = st.text_area("Optional extraction focus", placeholder="Example: prioritize APIs, dependencies, failure modes, and ownership.")
+    master_link_count = st.slider(
+        "Overview links",
+        3,
+        20,
+        10,
+        help="Synthetic links from the master concept to highly connected entities.",
+    )
+    custom_focus = st.text_area(
+        "Optional extraction focus",
+        placeholder="Example: prioritize APIs, dependencies, failure modes, and ownership.",
+    )
 
     st.divider()
     st.header("Persistence")
     uploaded_state = st.file_uploader("Load graph state", type=["json"], key="state_loader")
     if uploaded_state is not None:
-        try:
-            state = json.load(uploaded_state)
-            loaded = nx.node_link_graph(state["graph_data"])
-            loaded = migrate_legacy_graph(loaded)
-            st.session_state.kg_graph = loaded
-            st.session_state.master_concept = state.get("master_concept")
-            st.session_state.node_canonical_map = state.get("node_canonical_map") or reconstruct_node_map(loaded)
-            st.session_state.processing_complete = True
-            st.session_state.chat_history = []
-            st.success(f"Loaded {loaded.number_of_nodes()} nodes / {loaded.number_of_edges()} claims")
-        except Exception as exc:
-            st.error(f"Could not load graph state: {exc}")
+        raw_state = uploaded_state.getvalue()
+        fingerprint = hashlib.sha256(raw_state).hexdigest()
+        if fingerprint != st.session_state.loaded_state_fingerprint:
+            try:
+                loaded, master, node_map = deserialize_graph_state(raw_state)
+                st.session_state.kg_graph = loaded
+                st.session_state.master_concept = master
+                st.session_state.node_canonical_map = node_map
+                st.session_state.processing_complete = True
+                st.session_state.chat_history = []
+                st.session_state.graph_revision += 1
+                st.session_state.loaded_state_fingerprint = fingerprint
+                st.success(f"Loaded {loaded.number_of_nodes()} nodes / {loaded.number_of_edges()} claims")
+            except Exception as exc:
+                st.error(f"Could not load graph state: {exc}")
 
     if st.button("Clear workspace", use_container_width=True):
         st.session_state.kg_graph = nx.MultiDiGraph()
@@ -496,6 +382,7 @@ with st.sidebar:
         st.session_state.master_concept = None
         st.session_state.processing_complete = False
         st.session_state.chat_history = []
+        st.session_state.loaded_state_fingerprint = None
         st.session_state.graph_revision += 1
         st.rerun()
 
@@ -546,14 +433,13 @@ if st.button("Build evidence graph", type="primary", use_container_width=True):
     graph, node_map = create_graph(master)
     progress = st.progress(0)
     status = st.empty()
-    extracted = 0
     failures = 0
 
     for index, chunk in enumerate(chunks, start=1):
         status.caption(f"Extracting claims · {index}/{len(chunks)} · {chunk.citation}")
         try:
             claims = extract_chunk_claims(base_url, api_key, model_name, chunk, temperature, custom_focus)
-            extracted += add_claims(graph, node_map, claims)
+            add_claims(graph, node_map, claims)
         except Exception as exc:
             failures += 1
             st.warning(f"Skipped {chunk.citation}: {str(exc)[:180]}")
@@ -572,6 +458,7 @@ if st.button("Build evidence graph", type="primary", use_container_width=True):
     st.session_state.master_concept = master
     st.session_state.processing_complete = True
     st.session_state.chat_history = []
+    st.session_state.loaded_state_fingerprint = None
     st.session_state.graph_revision += 1
     status.empty()
     progress.empty()
@@ -579,7 +466,10 @@ if st.button("Build evidence graph", type="primary", use_container_width=True):
     if graph.number_of_nodes() <= 1:
         st.error("The model did not produce usable claims. Try a stronger instruction-following model or inspect the source text.")
     else:
-        st.success(f"Built {graph.number_of_nodes()} nodes and {graph.number_of_edges()} source-traceable claims. {failures} chunks failed.")
+        st.success(
+            f"Built {graph.number_of_nodes()} nodes and {graph.number_of_edges()} source-traceable claims. "
+            f"{failures} chunks failed."
+        )
     st.rerun()
 
 if st.session_state.processing_complete or st.session_state.kg_graph.number_of_nodes() > 0:
@@ -602,7 +492,7 @@ if st.session_state.processing_complete or st.session_state.kg_graph.number_of_n
     e1, e2, e3 = st.columns(3)
     e1.download_button(
         "Graph state",
-        export_state(graph),
+        serialize_graph_state(graph, st.session_state.master_concept, st.session_state.node_canonical_map),
         file_name="knowledgelens_state.json",
         mime="application/json",
         use_container_width=True,
@@ -614,14 +504,20 @@ if st.session_state.processing_complete or st.session_state.kg_graph.number_of_n
         mime="application/json",
         use_container_width=True,
     )
-    readable = "\n".join(
-        f"[{claim['source']} · {'p.' + str(claim['page']) if claim['page'] else 'chunk ' + str(claim['chunk_index'])}] "
-        f"{claim['subject']} --[{claim['relation']}]--> {claim['object']}"
-        for claim in export_data["claims"]
-    )
+
+    readable_lines = []
+    for claim in export_data["claims"]:
+        source = claim["source"]
+        if not source and claim.get("legacy_sources"):
+            source = "legacy candidates: " + ", ".join(claim["legacy_sources"])
+        source = source or "unknown source"
+        location = f"p.{claim['page']}" if claim["page"] is not None else f"chunk {claim['chunk_index']}"
+        readable_lines.append(
+            f"[{source} · {location}] {claim['subject']} --[{claim['relation']}]--> {claim['object']}"
+        )
     e3.download_button(
         "Claim ledger",
-        readable,
+        "\n".join(readable_lines),
         file_name="knowledgelens_claims.txt",
         mime="text/plain",
         use_container_width=True,

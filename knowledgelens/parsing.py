@@ -1,28 +1,48 @@
 from __future__ import annotations
 
 import json
-import re
+import unicodedata
 from collections.abc import Iterable
 from typing import Any
 
 from .models import Claim, DocumentChunk
 
-_FENCE_RE = re.compile(r"^```(?:json)?\s*|\s*```$", re.IGNORECASE)
+
+def _strip_markdown_fence(text: str) -> str:
+    cleaned = text.strip()
+    if not cleaned.startswith("```"):
+        return cleaned
+
+    first_newline = cleaned.find("\n")
+    if first_newline == -1:
+        return cleaned
+
+    header = cleaned[:first_newline].strip().casefold()
+    if header not in {"```", "```json"}:
+        return cleaned
+
+    cleaned = cleaned[first_newline + 1 :]
+    trimmed = cleaned.rstrip()
+    if trimmed.endswith("```"):
+        trimmed = trimmed[:-3]
+    return trimmed.strip()
 
 
 def normalize_entity(raw: Any) -> tuple[str, str] | None:
     if raw is None:
         return None
+
     display = " ".join(str(raw).strip().split())
-    if len(display) < 2:
+    if not display:
         return None
 
     stopwords = {"the", "a", "an", "and", "or", "but", "in", "on", "at", "to", "for"}
-    if display.lower() in stopwords:
+    if display.casefold() in stopwords:
         return None
 
-    canonical = re.sub(r"[^a-z0-9]+", " ", display.lower()).strip()
-    canonical = " ".join(canonical.split())
+    folded = unicodedata.normalize("NFKC", display).casefold()
+    canonical_chars = [char if char.isalnum() else " " for char in folded]
+    canonical = " ".join("".join(canonical_chars).split())
     if not canonical:
         return None
     return canonical, display
@@ -35,7 +55,7 @@ def _coerce_confidence(value: Any) -> float | None:
         numeric = float(value)
     except (TypeError, ValueError):
         return None
-    if numeric > 1 and numeric <= 100:
+    if 1 < numeric <= 100:
         numeric /= 100
     return min(1.0, max(0.0, numeric))
 
@@ -72,21 +92,17 @@ def _iter_json_items(payload: Any) -> Iterable[dict[str, Any]]:
         for key in ("claims", "triples", "relationships", "data"):
             value = payload.get(key)
             if isinstance(value, list):
-                for item in value:
-                    if isinstance(item, dict):
-                        yield item
+                yield from (item for item in value if isinstance(item, dict))
                 return
         if {"subject", "object"}.issubset(payload.keys()):
             yield payload
     elif isinstance(payload, list):
-        for item in payload:
-            if isinstance(item, dict):
-                yield item
+        yield from (item for item in payload if isinstance(item, dict))
 
 
 def parse_claims(text: str, chunk: DocumentChunk) -> list[Claim]:
     """Parse structured JSON first, then fall back to the legacy pipe format."""
-    cleaned = _FENCE_RE.sub("", text.strip()).strip()
+    cleaned = _strip_markdown_fence(text)
     claims: list[Claim] = []
 
     try:
