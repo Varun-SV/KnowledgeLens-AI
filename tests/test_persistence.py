@@ -16,6 +16,21 @@ def test_v1_migration_does_not_fabricate_relation_source_pairs():
         assert data["source"] == ""
         assert data["legacy_sources"] == ["s1", "s2"]
         assert data["provenance_status"] == "legacy-aggregated"
+        assert data["synthetic"] is False
+
+
+def test_v1_source_less_master_links_remain_synthetic():
+    old = nx.DiGraph()
+    old.add_node("Knowledge Base", type="master")
+    old.add_node("Topic", type="entity")
+    old.add_edge("Knowledge Base", "Topic", relations=["includes"], sources=set())
+
+    migrated = migrate_legacy_graph(old, master_concept="Knowledge Base")
+    data = next(iter(migrated.edges(data=True)))[2]
+
+    assert data["synthetic"] is True
+    assert data["provenance_status"] == "legacy-synthetic"
+    assert data["legacy_sources"] == []
 
 
 def test_serialization_pins_edges_field():
