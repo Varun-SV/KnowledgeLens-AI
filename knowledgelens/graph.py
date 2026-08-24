@@ -136,13 +136,22 @@ def graph_to_export(graph: nx.MultiDiGraph) -> dict[str, Any]:
                 "evidence": data.get("evidence", ""),
                 "confidence": data.get("confidence"),
                 "synthetic": bool(data.get("synthetic", False)),
+                "provenance_status": data.get("provenance_status"),
             }
         )
 
     source_counts: dict[str, int] = defaultdict(int)
     for claim in claims:
-        if claim["source"] and not claim["synthetic"]:
+        if claim["synthetic"]:
+            continue
+        if claim["source"]:
             source_counts[claim["source"]] += 1
+            continue
+        # v1 states preserved only an aggregate candidate-source set. Keep those
+        # document identities in the source ledger without fabricating a primary source.
+        for legacy_source in set(claim.get("legacy_sources", [])):
+            if legacy_source:
+                source_counts[str(legacy_source)] += 1
 
     return {
         "schema_version": 2,
