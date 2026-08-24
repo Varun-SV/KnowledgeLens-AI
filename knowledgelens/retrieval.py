@@ -4,19 +4,13 @@ from difflib import SequenceMatcher
 
 import networkx as nx
 
+from .parsing import canonicalize_label
+
 
 def _token_list(value: str) -> list[str]:
-    tokens: list[str] = []
-    current: list[str] = []
-    for char in value.casefold():
-        if char.isalnum():
-            current.append(char)
-        elif current:
-            tokens.append("".join(current))
-            current = []
-    if current:
-        tokens.append("".join(current))
-    return tokens
+    """Tokenize with the same identifier semantics used by graph canonicalization."""
+    canonical = canonicalize_label(value)
+    return canonical.split() if canonical else []
 
 
 def _contains_token_phrase(query: str, node: str) -> bool:
