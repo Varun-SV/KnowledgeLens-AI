@@ -64,6 +64,10 @@ def relevant_nodes(graph: nx.MultiDiGraph, query: str, limit: int = 5) -> list[s
     return [str(node) for node in sorted(graph.nodes, key=graph.degree, reverse=True)[:1]]
 
 
+def _is_evidentiary(data: dict) -> bool:
+    return not bool(data.get("synthetic", False))
+
+
 def _claim_line(subject: str, obj: str, data: dict) -> str:
     source = data.get("source") or "unknown source"
     legacy_sources = [str(item) for item in data.get("legacy_sources", []) if item]
@@ -78,11 +82,7 @@ def _claim_line(subject: str, obj: str, data: dict) -> str:
     confidence = data.get("confidence")
     confidence_text = f" · confidence {confidence:.2f}" if isinstance(confidence, (int, float)) else ""
     evidence_text = f" · evidence: {evidence}" if evidence else ""
-    synthetic = " · synthetic overview link" if data.get("synthetic") else ""
-    return (
-        f"[{source} · {location}{confidence_text}{synthetic}] "
-        f"{subject} --[{relation}]--> {obj}{evidence_text}"
-    )
+    return f"[{source} · {location}{confidence_text}] {subject} --[{relation}]--> {obj}{evidence_text}"
 
 
 def _append_claims_between(
@@ -94,6 +94,8 @@ def _append_claims_between(
 ) -> None:
     for subject, obj in ((left, right), (right, left)):
         for key, data in graph.get_edge_data(subject, obj, default={}).items():
+            if not _is_evidentiary(data):
+                continue
             marker = (str(subject), str(obj), str(key))
             if marker not in seen:
                 lines.append(_claim_line(str(subject), str(obj), data))
@@ -110,11 +112,15 @@ def retrieve_graph_context(graph: nx.MultiDiGraph, query: str, max_chars: int = 
 
     for node in seeds:
         for subject, obj, key, data in graph.out_edges(node, keys=True, data=True):
+            if not _is_evidentiary(data):
+                continue
             marker = (str(subject), str(obj), str(key))
             if marker not in seen:
                 lines.append(_claim_line(str(subject), str(obj), data))
                 seen.add(marker)
         for subject, obj, key, data in graph.in_edges(node, keys=True, data=True):
+            if not _is_evidentiary(data):
+                continue
             marker = (str(subject), str(obj), str(key))
             if marker not in seen:
                 lines.append(_claim_line(str(subject), str(obj), data))
@@ -122,7 +128,11 @@ def retrieve_graph_context(graph: nx.MultiDiGraph, query: str, max_chars: int = 
 
     simple = nx.Graph()
     simple.add_nodes_from(graph.nodes)
-    simple.add_edges_from((u, v) for u, v in graph.edges())
+    simple.add_edges_from(
+        (subject, obj)
+        for subject, obj, data in graph.edges(data=True)
+        if _is_evidentiary(data)
+    )
 
     if len(seeds) >= 2:
         for index, source in enumerate(seeds):
@@ -137,6 +147,6 @@ def retrieve_graph_context(graph: nx.MultiDiGraph, query: str, max_chars: int = 
                         _append_claims_between(graph, str(left), str(right), lines, seen)
 
     if not lines:
-        return "No specific graph connections were found for the query."
+        return "No specific source-backed graph connections were found for the query."
 
     return "\n".join(lines)[:max_chars]
