@@ -34,6 +34,24 @@ def test_multiple_claims_keep_independent_provenance():
     assert {c["source"] for c in export["claims"]} == {"perf.pdf", "risk.md"}
 
 
+def test_programming_language_entities_with_significant_punctuation_do_not_merge():
+    graph, node_map = create_graph("Languages")
+    add_claims(
+        graph,
+        node_map,
+        [
+            Claim("C", "differs from", "C++", "languages.md", 1),
+            Claim("C#", "targets", ".NET", "languages.md", 2),
+        ],
+    )
+
+    assert {"C", "C++", "C#", ".NET"}.issubset(graph.nodes)
+    assert node_map["c"] == "C"
+    assert node_map["c++"] == "C++"
+    assert node_map["c#"] == "C#"
+    assert node_map[".net"] == ".NET"
+
+
 def test_synthetic_master_links_do_not_count_as_sources():
     graph, node_map = create_graph("System")
     add_claims(graph, node_map, [Claim("Cache", "reduces", "Latency", "perf.pdf", 1)])
