@@ -220,6 +220,21 @@ def _validate_node_ids(graph: nx.Graph) -> None:
         )
 
 
+def _validate_canonical_node_ids(graph: nx.Graph) -> None:
+    """Enforce the same one-node-per-canonical-entity invariant as live graph admission."""
+    seen: dict[str, str] = {}
+    for node in graph.nodes:
+        display = str(node)
+        canonical = canonical_key(display)
+        existing = seen.get(canonical)
+        if existing is not None and existing != display:
+            raise ValueError(
+                "Graph state contains node identifiers that collapse to the same canonical entity: "
+                f"{existing!r} and {display!r}."
+            )
+        seen[canonical] = display
+
+
 def _validate_master(graph: nx.Graph, master_concept: str | None) -> None:
     master_nodes = [node for node, data in graph.nodes(data=True) if data.get("type") == "master"]
     if graph.number_of_nodes() == 0:
@@ -243,6 +258,7 @@ def _validate_v2_graph(graph: nx.Graph, master_concept: str | None) -> None:
 
     _validate_graph_complexity(graph)
     _validate_node_ids(graph)
+    _validate_canonical_node_ids(graph)
     _validate_master(graph, master_concept)
 
     for _subject, _obj, _key, data in graph.edges(keys=True, data=True):
