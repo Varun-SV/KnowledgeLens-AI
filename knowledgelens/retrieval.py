@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import heapq
+from dataclasses import dataclass
 from difflib import SequenceMatcher
 
 import networkx as nx
@@ -33,6 +35,17 @@ _RETRIEVAL_STOPWORDS = frozenset(
         "with",
     }
 )
+_MAX_FUZZY_CANDIDATES = 64
+_MAX_FUZZY_QUERY_CHARS = 512
+_MAX_FUZZY_NODE_CHARS = 240
+
+
+@dataclass(slots=True)
+class _NodeCandidate:
+    node: str
+    base_score: float
+    fuzzy_text: str
+    affinity: float
 
 
 def _token_list(value: str) -> list[str]:
@@ -41,18 +54,71 @@ def _token_list(value: str) -> list[str]:
     return canonical.split() if canonical else []
 
 
+def _content_tokens(tokens: list[str]) -> set[str]:
+    return {token for token in tokens if token not in _RETRIEVAL_STOPWORDS}
+
+
 def _content_token_set(value: str) -> set[str]:
     """Return overlap tokens without generic grammatical words."""
-    return {token for token in _token_list(value) if token not in _RETRIEVAL_STOPWORDS}
+    return _content_tokens(_token_list(value))
+
+
+def _contains_token_phrase_tokens(query_tokens: list[str], node_tokens: list[str]) -> bool:
+    if not query_tokens or not node_tokens or len(node_tokens) > len(query_tokens):
+        return False
+    width = len(node_tokens)
+    return any(
+        query_tokens[index : index + width] == node_tokens
+        for index in range(len(query_tokens) - width + 1)
+    )
 
 
 def _contains_token_phrase(query: str, node: str) -> bool:
-    q_tokens = _token_list(query)
-    n_tokens = _token_list(node)
-    if not q_tokens or not n_tokens or len(n_tokens) > len(q_tokens):
-        return False
-    width = len(n_tokens)
-    return any(q_tokens[index : index + width] == n_tokens for index in range(len(q_tokens) - width + 1))
+    return _contains_token_phrase_tokens(_token_list(query), _token_list(node))
+
+
+def _base_score(
+    query_tokens: list[str],
+    query_content_tokens: set[str],
+    node_tokens: list[str],
+) -> float:
+    if not node_tokens:
+        return 0.0
+
+    score = 0.0
+    if _contains_token_phrase_tokens(query_tokens, node_tokens):
+        score += 3.0
+
+    # Stopwords remain available to exact phrase identity above, but they do not
+    # create a semantic overlap match by themselves (for example, `the`).
+    node_content_tokens = _content_tokens(node_tokens)
+    if query_content_tokens and node_content_tokens:
+        overlap = len(query_content_tokens & node_content_tokens) / len(node_content_tokens)
+        score += overlap * 2.0
+    return score
+
+
+def _bounded_fuzzy_text(canonical: str, max_chars: int) -> str:
+    if len(canonical) <= max_chars:
+        return canonical
+    half = max_chars // 2
+    return f"{canonical[:half]} {canonical[-half:]}"[:max_chars]
+
+
+def _character_ngrams(value: str) -> set[str]:
+    compact = " ".join(value.split())
+    if not compact:
+        return set()
+    if len(compact) == 1:
+        return {compact}
+    return {compact[index : index + 2] for index in range(len(compact) - 1)}
+
+
+def _ngram_affinity(query_ngrams: set[str], node_text: str) -> float:
+    node_ngrams = _character_ngrams(node_text)
+    if not query_ngrams or not node_ngrams:
+        return 0.0
+    return len(query_ngrams & node_ngrams) / len(node_ngrams)
 
 
 def score_node(query: str, node: str) -> float:
@@ -61,19 +127,14 @@ def score_node(query: str, node: str) -> float:
     if not q or not n:
         return 0.0
 
-    score = 0.0
-    if _contains_token_phrase(q, n):
-        score += 3.0
+    query_tokens = _token_list(q)
+    node_tokens = _token_list(n)
+    score = _base_score(query_tokens, _content_tokens(query_tokens), node_tokens)
 
-    # Stopwords remain available to exact phrase identity above, but they do not
-    # create a semantic overlap match by themselves (for example, `the`).
-    q_tokens = _content_token_set(q)
-    n_tokens = _content_token_set(n)
-    if q_tokens and n_tokens:
-        overlap = len(q_tokens & n_tokens) / len(n_tokens)
-        score += overlap * 2.0
-
-    score += SequenceMatcher(None, q, n).ratio() * 0.75
+    fuzzy_query = _bounded_fuzzy_text(canonicalize_label(q), _MAX_FUZZY_QUERY_CHARS)
+    fuzzy_node = _bounded_fuzzy_text(canonicalize_label(n), _MAX_FUZZY_NODE_CHARS)
+    if fuzzy_query and fuzzy_node:
+        score += SequenceMatcher(None, fuzzy_query, fuzzy_node).ratio() * 0.75
     return score
 
 
@@ -114,8 +175,50 @@ def _master_evidence_neighbors(
 
 
 def relevant_nodes(graph: nx.MultiDiGraph, query: str, limit: int = 5) -> list[str]:
+    query_text = query.casefold().strip()
+    query_tokens = _token_list(query_text)
+    query_content_tokens = _content_tokens(query_tokens)
+    query_canonical = canonicalize_label(query_text)
+    fuzzy_query = _bounded_fuzzy_text(query_canonical, _MAX_FUZZY_QUERY_CHARS)
+    query_ngrams = _character_ngrams(query_canonical)
+
+    candidates: list[_NodeCandidate] = []
+    for node in graph.nodes:
+        node_text = str(node)
+        node_tokens = _token_list(node_text)
+        node_canonical = " ".join(node_tokens)
+        fuzzy_node = _bounded_fuzzy_text(node_canonical, _MAX_FUZZY_NODE_CHARS)
+        candidates.append(
+            _NodeCandidate(
+                node=node_text,
+                base_score=_base_score(query_tokens, query_content_tokens, node_tokens),
+                fuzzy_text=fuzzy_node,
+                affinity=_ngram_affinity(query_ngrams, node_canonical),
+            )
+        )
+
+    # Exact phrase/token overlap is cheap enough to evaluate for the full accepted
+    # graph. Expensive edit-sequence fuzzy matching is deliberately restricted to
+    # the most lexically plausible candidates, and both inputs are length-bounded.
+    fuzzy_candidates = heapq.nlargest(
+        min(_MAX_FUZZY_CANDIDATES, len(candidates)),
+        candidates,
+        key=lambda candidate: (candidate.affinity, candidate.base_score),
+    )
+    fuzzy_scores: dict[str, float] = {}
+    if fuzzy_query:
+        for candidate in fuzzy_candidates:
+            if not candidate.fuzzy_text:
+                continue
+            fuzzy_scores[candidate.node] = (
+                SequenceMatcher(None, fuzzy_query, candidate.fuzzy_text).ratio() * 0.75
+            )
+
     ranked = sorted(
-        ((score_node(query, str(node)), str(node)) for node in graph.nodes),
+        (
+            (candidate.base_score + fuzzy_scores.get(candidate.node, 0.0), candidate.node)
+            for candidate in candidates
+        ),
         key=lambda item: item[0],
         reverse=True,
     )
