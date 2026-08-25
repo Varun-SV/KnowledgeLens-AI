@@ -124,12 +124,12 @@ def extract_chunk_claims(
 ):
     system_prompt = """You extract auditable knowledge-graph claims from source text.
 Return ONLY valid JSON, ideally an array. Each item must use this schema:
-{"subject":"...","relation":"...","object":"...","evidence":"short source-supported evidence","confidence":0.0}
+{"subject":"...","relation":"...","object":"...","evidence":"short verbatim source excerpt","confidence":0.0}
 Rules:
 - Extract only claims supported by the supplied text.
 - Keep entities specific and reusable across documents.
 - Use concise relation phrases.
-- Evidence should be a short paraphrase or brief excerpt, never invented.
+- Evidence MUST be a short verbatim excerpt copied from the supplied source text; never paraphrase or invent evidence.
 - Confidence must be 0 to 1.
 - Do not emit markdown fences or commentary.
 """
