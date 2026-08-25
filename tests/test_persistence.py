@@ -5,6 +5,14 @@ import pytest
 
 from knowledgelens.persistence import deserialize_graph_state, migrate_legacy_graph, serialize_graph_state
 
+_NODE_LINK_FIELDS = {
+    "source": "__kl_from",
+    "target": "__kl_to",
+    "name": "__kl_id",
+    "key": "__kl_key",
+}
+_NODE_LINK_META = "_knowledgelens_node_link_fields"
+
 
 def test_v1_migration_does_not_fabricate_relation_source_pairs():
     old = nx.DiGraph()
@@ -34,35 +42,77 @@ def test_v1_source_less_master_links_remain_synthetic():
     assert data["legacy_sources"] == []
 
 
-def test_serialization_pins_edges_field():
+def _valid_v2_graph() -> nx.MultiDiGraph:
     graph = nx.MultiDiGraph()
     graph.add_node("A", type="master")
-    raw = serialize_graph_state(graph, "A", {"a": "A"})
-    payload = json.loads(raw)
-    assert "edges" in payload["graph_data"]
-    assert "links" not in payload["graph_data"]
-
-
-def test_loader_accepts_legacy_links_field_for_v2_networkx_compatibility():
-    graph = nx.MultiDiGraph()
-    graph.add_node("A", type="master")
-    graph.add_node("B")
+    graph.add_node("B", type="entity")
     graph.add_edge(
         "A",
         "B",
-        relation="r",
-        source="s",
+        key="claim",
+        relation="supports",
+        source="doc.md",
+        legacy_sources=[],
         chunk_index=1,
         page=None,
-        evidence="supported",
+        evidence="The source supports this relation.",
         confidence=0.9,
         synthetic=False,
+        provenance_status=None,
     )
-    data = nx.node_link_data(graph, edges="links")
-    raw = json.dumps({"schema_version": 2, "master_concept": "A", "graph_data": data})
+    return graph
+
+
+def test_serialization_pins_edges_and_namespaces_node_link_structure():
+    graph = _valid_v2_graph()
+    raw = serialize_graph_state(graph, "A", {"a": "A", "b": "B"})
+    payload = json.loads(raw)
+    graph_data = payload["graph_data"]
+
+    assert "edges" in graph_data
+    assert "links" not in graph_data
+    assert graph_data[_NODE_LINK_META] == _NODE_LINK_FIELDS
+
+    edge = graph_data["edges"][0]
+    assert edge["__kl_from"] == "A"
+    assert edge["__kl_to"] == "B"
+    assert edge["__kl_key"] == "claim"
+    assert edge["source"] == "doc.md"
+
+
+def test_serialization_round_trip_preserves_claim_provenance_source():
+    graph = _valid_v2_graph()
+    raw = serialize_graph_state(graph, "A", {"a": "A", "b": "B"})
     loaded, master, _ = deserialize_graph_state(raw)
+
+    assert master == "A"
+    data = next(iter(loaded.edges(data=True)))[2]
+    assert data["source"] == "doc.md"
+    assert data["evidence"] == "The source supports this relation."
+
+
+def test_loader_accepts_legacy_links_collection_with_namespaced_v2_fields():
+    graph = _valid_v2_graph()
+    data = nx.node_link_data(graph, edges="links", **_NODE_LINK_FIELDS)
+    data[_NODE_LINK_META] = dict(_NODE_LINK_FIELDS)
+    raw = json.dumps({"schema_version": 2, "master_concept": "A", "graph_data": data})
+
+    loaded, master, _ = deserialize_graph_state(raw)
+
     assert master == "A"
     assert loaded.number_of_edges() == 1
+    assert next(iter(loaded.edges(data=True)))[2]["source"] == "doc.md"
+
+
+def test_loader_fails_closed_for_early_v2_default_fields_that_lost_provenance_source():
+    graph = _valid_v2_graph()
+    # NetworkX's default structural endpoint field is also named `source`, so this
+    # legacy encoding cannot preserve the claim's provenance `source` attribute.
+    data = nx.node_link_data(graph, edges="links")
+    raw = json.dumps({"schema_version": 2, "master_concept": "A", "graph_data": data})
+
+    with pytest.raises(ValueError, match="non-empty source"):
+        deserialize_graph_state(raw)
 
 
 def test_loader_rejects_missing_edge_collection():
@@ -153,6 +203,28 @@ def test_loader_rejects_non_string_node_ids_in_v2():
     )
     with pytest.raises(ValueError, match="node identifiers"):
         deserialize_graph_state(raw)
+
+
+def test_loader_rejects_missing_or_multiple_v2_master_nodes():
+    missing_master = nx.MultiDiGraph()
+    missing_master.add_node("A", type="entity")
+    missing_data = nx.node_link_data(missing_master, edges="edges", **_NODE_LINK_FIELDS)
+    missing_data[_NODE_LINK_META] = dict(_NODE_LINK_FIELDS)
+
+    multiple_masters = nx.MultiDiGraph()
+    multiple_masters.add_node("A", type="master")
+    multiple_masters.add_node("B", type="master")
+    multiple_data = nx.node_link_data(multiple_masters, edges="edges", **_NODE_LINK_FIELDS)
+    multiple_data[_NODE_LINK_META] = dict(_NODE_LINK_FIELDS)
+
+    with pytest.raises(ValueError, match="exactly one master"):
+        deserialize_graph_state(
+            json.dumps({"schema_version": 2, "master_concept": "A", "graph_data": missing_data})
+        )
+    with pytest.raises(ValueError, match="exactly one master"):
+        deserialize_graph_state(
+            json.dumps({"schema_version": 2, "master_concept": "A", "graph_data": multiple_data})
+        )
 
 
 def test_migrated_v1_state_can_be_reserialized_and_loaded_as_v2():
