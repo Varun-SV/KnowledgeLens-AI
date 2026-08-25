@@ -6,6 +6,7 @@ from typing import Any
 import urllib3
 from urllib3.util import Timeout
 
+from .limits import MAX_REQUEST_HEADERS_BYTES
 from .security import IPAddress, ValidatedEndpoint
 
 _MAX_REQUEST_BYTES = 96 * 1024
@@ -35,6 +36,18 @@ def _pool_for(endpoint: ValidatedEndpoint, address: IPAddress):
     return urllib3.HTTPConnectionPool(**common)
 
 
+def _validate_headers(headers: dict[str, str]) -> None:
+    total_bytes = 0
+    for name, value in headers.items():
+        if "\r" in name or "\n" in name or "\r" in value or "\n" in value:
+            raise PinnedRequestError("Outbound LLM request headers must not contain line breaks.")
+        total_bytes += len(name.encode("utf-8")) + len(value.encode("utf-8")) + 4
+    if total_bytes > MAX_REQUEST_HEADERS_BYTES:
+        raise PinnedRequestError(
+            f"The LLM request headers exceeded the {MAX_REQUEST_HEADERS_BYTES // 1024} KiB safety limit."
+        )
+
+
 def post_json_pinned(
     endpoint: ValidatedEndpoint,
     payload: dict[str, Any],
@@ -53,6 +66,7 @@ def post_json_pinned(
     request_headers = dict(headers or {})
     request_headers.setdefault("Content-Type", "application/json")
     request_headers["Host"] = endpoint.host_header
+    _validate_headers(request_headers)
 
     target = f"{endpoint.base_path}/v1/chat/completions" if endpoint.base_path else "/v1/chat/completions"
     errors: list[str] = []
