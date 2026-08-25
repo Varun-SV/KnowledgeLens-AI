@@ -53,6 +53,13 @@ def test_visualization_budget_is_checked_before_pyvis_network_creation():
     assert "return" in helper[guard:network]
 
 
+def test_parallel_edges_use_shared_unique_curve_helper():
+    app_source = Path("KnowledgeLens_AI.py").read_text(encoding="utf-8")
+    assert "parallel_edge_smooth" in app_source
+    assert "smooth=parallel_edge_smooth(edge_index, edge_totals[pair])" in app_source
+    assert "def _parallel_edge_smooth" not in app_source
+
+
 def test_manual_master_and_extraction_focus_limits_are_wired_before_graph_creation():
     app_source = Path("KnowledgeLens_AI.py").read_text(encoding="utf-8")
 
@@ -63,6 +70,16 @@ def test_manual_master_and_extraction_focus_limits_are_wired_before_graph_creati
     graph_creation = app_source.index("graph, node_map = create_graph(master)")
     assert master_validation < graph_creation
     assert focus_validation < graph_creation
+
+
+def test_api_key_limit_is_wired_into_password_widget_and_shared_preflight():
+    app_source = Path("KnowledgeLens_AI.py").read_text(encoding="utf-8")
+    runtime_source = Path("knowledgelens/runtime.py").read_text(encoding="utf-8")
+
+    api_widget = app_source[app_source.index('api_key = st.text_input(') : app_source.index('default_model =', app_source.index('api_key = st.text_input('))]
+    assert "max_chars=MAX_API_KEY_CHARS" in api_widget
+    assert "len(api_key) > MAX_API_KEY_CHARS" in runtime_source
+    assert "request_configuration_error(provider, api_key, model_name)" in app_source
 
 
 def test_graph_capacity_failure_stops_build_before_session_commit():
