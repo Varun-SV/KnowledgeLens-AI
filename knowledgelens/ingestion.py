@@ -57,7 +57,7 @@ def _split_oversized(text: str, max_chars: int, overlap: int) -> Iterable[str]:
     start = 0
     while start < len(text):
         end = min(len(text), start + max_chars)
-        safe_boundary = False
+        safe_boundary: str | None = None
         if end < len(text):
             newline_boundary = text.rfind("\n", start, end)
             sentence_boundary = text.rfind(". ", start, end)
@@ -66,7 +66,7 @@ def _split_oversized(text: str, max_chars: int, overlap: int) -> Iterable[str]:
                 # The piece ends at a semantic boundary, so copying overlap would
                 # repeat already-complete lines/sentences into the next LLM request.
                 end = boundary + 1
-                safe_boundary = True
+                safe_boundary = "newline" if boundary == newline_boundary else "sentence"
 
         piece = text[start:end].strip("\n")
         if piece:
@@ -74,9 +74,16 @@ def _split_oversized(text: str, max_chars: int, overlap: int) -> Iterable[str]:
         if end >= len(text):
             break
 
-        if safe_boundary:
+        if safe_boundary == "newline":
+            # `end` already points at the first character of the next line. Do not
+            # consume any following spaces/tabs: they may be meaningful indentation.
             start = end
-            while start < len(text) and text[start].isspace():
+            continue
+        if safe_boundary == "sentence":
+            # The boundary includes the period but not its separator. Consume only
+            # horizontal prose spacing, never a newline/indentation sequence.
+            start = end
+            while start < len(text) and text[start] in {" ", "\t"}:
                 start += 1
             continue
 
