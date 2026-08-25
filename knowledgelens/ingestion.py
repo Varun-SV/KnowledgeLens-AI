@@ -102,10 +102,10 @@ def _split_blocks(text: str) -> list[str]:
     return blocks
 
 
-def _split_oversized_with_overlap(text: str, max_chars: int, overlap: int) -> Iterable[tuple[str, bool]]:
-    """Yield pieces plus whether each piece begins inside forced overlap from its predecessor."""
+def _split_oversized_with_overlap(text: str, max_chars: int, overlap: int) -> Iterable[tuple[str, str]]:
+    """Yield each piece plus the exact prefix copied from its predecessor."""
     start = 0
-    overlap_from_previous = False
+    overlap_prefix = ""
     while start < len(text):
         end = min(len(text), start + max_chars)
         safe_boundary: str | None = None
@@ -121,7 +121,9 @@ def _split_oversized_with_overlap(text: str, max_chars: int, overlap: int) -> It
 
         piece = text[start:end].strip("\n")
         if piece:
-            yield piece, overlap_from_previous
+            # Any leading/trailing newlines removed from the piece are not available
+            # as evidence, so trim the stored copied prefix the same way.
+            yield piece, overlap_prefix.strip("\n")
         if end >= len(text):
             break
 
@@ -129,7 +131,7 @@ def _split_oversized_with_overlap(text: str, max_chars: int, overlap: int) -> It
             # `end` already points at the first character of the next line. Do not
             # consume any following spaces/tabs: they may be meaningful indentation.
             start = end
-            overlap_from_previous = False
+            overlap_prefix = ""
             continue
         if safe_boundary == "sentence":
             # The boundary includes the period but not its separator. Consume only
@@ -137,21 +139,22 @@ def _split_oversized_with_overlap(text: str, max_chars: int, overlap: int) -> It
             start = end
             while start < len(text) and text[start] in {" ", "\t"}:
                 start += 1
-            overlap_from_previous = False
+            overlap_prefix = ""
             continue
 
-        # Only retain overlap when we truly had to cut mid-content. Mark the next
-        # chunk so graph admission may collapse exact duplicates only across this
-        # known-overlap boundary, never across unrelated distant occurrences.
+        # Only retain overlap when we truly had to cut mid-content. Record exactly
+        # what the next piece copies from this piece so downstream dedupe can prove
+        # that a claim's verbatim evidence came from duplicated prefix text.
         next_start = max(start + 1, end - overlap)
         newline = text.find("\n", next_start, end)
-        start = newline + 1 if newline != -1 else next_start
-        overlap_from_previous = True
+        next_start = newline + 1 if newline != -1 else next_start
+        overlap_prefix = text[next_start:end]
+        start = next_start
 
 
 def _split_oversized(text: str, max_chars: int, overlap: int) -> Iterable[str]:
     """Compatibility wrapper returning only text pieces."""
-    for piece, _overlap_from_previous in _split_oversized_with_overlap(text, max_chars, overlap):
+    for piece, _overlap_prefix in _split_oversized_with_overlap(text, max_chars, overlap):
         yield piece
 
 
@@ -159,19 +162,19 @@ def _chunk_section_with_overlap(
     text: str,
     max_chars: int = 3200,
     overlap: int = 240,
-) -> list[tuple[str, bool]]:
-    """Chunk text and retain whether a chunk starts inside forced overlap."""
+) -> list[tuple[str, str]]:
+    """Chunk text and retain the exact copied prefix for forced-overlap chunks."""
     blocks = _split_blocks(text)
     if not blocks:
         stripped = text.replace("\r\n", "\n").replace("\r", "\n").strip("\n")
         blocks = [stripped] if stripped else []
 
-    chunks: list[tuple[str, bool]] = []
+    chunks: list[tuple[str, str]] = []
     current = ""
     for block in blocks:
         if len(block) > max_chars:
             if current:
-                chunks.append((current.strip("\n"), False))
+                chunks.append((current.strip("\n"), ""))
                 current = ""
             chunks.extend(_split_oversized_with_overlap(block, max_chars, overlap))
             continue
@@ -182,7 +185,7 @@ def _chunk_section_with_overlap(
             continue
 
         if current:
-            chunks.append((current.strip("\n"), False))
+            chunks.append((current.strip("\n"), ""))
 
         # A blank-line/block boundary is already a safe semantic split. Do not
         # copy the prior chunk's suffix into this block: doing so can cause a
@@ -190,13 +193,13 @@ def _chunk_section_with_overlap(
         current = block
 
     if current:
-        chunks.append((current.strip("\n"), False))
+        chunks.append((current.strip("\n"), ""))
     return chunks
 
 
 def chunk_section(text: str, max_chars: int = 3200, overlap: int = 240) -> list[str]:
     """Chunk text while preserving structure and avoiding duplication at safe block boundaries."""
-    return [piece for piece, _overlap_from_previous in _chunk_section_with_overlap(text, max_chars, overlap)]
+    return [piece for piece, _overlap_prefix in _chunk_section_with_overlap(text, max_chars, overlap)]
 
 
 def _uploaded_file_size(uploaded_file) -> int:
@@ -329,7 +332,7 @@ def prepare_chunks(
                     ),
                 )
 
-            for piece, overlap_from_previous in pieces:
+            for piece, overlap_prefix in pieces:
                 global_index += 1
                 chunks.append(
                     DocumentChunk(
@@ -337,7 +340,8 @@ def prepare_chunks(
                         text=piece,
                         chunk_index=global_index,
                         page=page,
-                        overlap_from_previous=overlap_from_previous,
+                        overlap_from_previous=bool(overlap_prefix),
+                        overlap_prefix=overlap_prefix,
                     )
                 )
     return IngestionResult(chunks, warnings)
