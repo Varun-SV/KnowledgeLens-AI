@@ -1,5 +1,6 @@
 import networkx as nx
 
+import knowledgelens.retrieval as retrieval
 from knowledgelens.retrieval import relevant_nodes, retrieve_graph_context, score_node
 
 
@@ -52,6 +53,27 @@ def test_retrieval_scoring_preserves_identifier_punctuation():
     _edge(graph, "C#", ".NET", "cs-dotnet", "targets")
 
     assert relevant_nodes(graph, "Explain C++")[:1] == ["C++"]
+
+
+def test_large_graph_retrieval_bounds_expensive_fuzzy_matching(monkeypatch):
+    graph = nx.MultiDiGraph()
+    graph.add_nodes_from(f"Entity {index}" for index in range(10_000))
+    calls: list[tuple[str, str]] = []
+
+    class CountingMatcher:
+        def __init__(self, _isjunk, left, right):
+            calls.append((left, right))
+            assert len(left) <= retrieval._MAX_FUZZY_QUERY_CHARS
+            assert len(right) <= retrieval._MAX_FUZZY_NODE_CHARS
+
+        def ratio(self):
+            return 0.0
+
+    monkeypatch.setattr(retrieval, "SequenceMatcher", CountingMatcher)
+
+    relevant_nodes(graph, "x" * 4_000)
+
+    assert len(calls) <= retrieval._MAX_FUZZY_CANDIDATES
 
 
 def test_mixed_direction_path_is_retrieved():
