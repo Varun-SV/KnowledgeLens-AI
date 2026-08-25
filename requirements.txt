@@ -1,5 +1,5 @@
 networkx>=3.4,<4
 pypdf>=6.4,<7
 pyvis>=0.3.2,<0.4
-streamlit>=1.52,<2
+streamlit>=1.54,<2
 urllib3>=2.2,<3
