@@ -1,4 +1,28 @@
 (() => {
+  const revealElements = [...document.querySelectorAll('.reveal')];
+  const showAllReveals = () => revealElements.forEach(el => el.classList.add('visible'));
+
+  try {
+    if (typeof IntersectionObserver === 'function') {
+      const observer = new IntersectionObserver(entries => {
+        entries.forEach(entry => {
+          if (entry.isIntersecting) {
+            entry.target.classList.add('visible');
+            observer.unobserve(entry.target);
+          }
+        });
+      }, { threshold: 0.12 });
+      revealElements.forEach(el => observer.observe(el));
+      window.__klRevealAnimationReady = true;
+    } else {
+      showAllReveals();
+    }
+  } catch (_error) {
+    // Animation is progressive enhancement: content must stay readable even if
+    // observer setup is unavailable or fails in an older browser.
+    showAllReveals();
+  }
+
   const svg = document.getElementById('knowledge-field');
   if (!svg) return;
 
@@ -10,6 +34,7 @@
   const clipCircle = document.getElementById('lens-clip-circle');
   const demo = svg.closest('.lens-demo');
   const readout = document.getElementById('evidence-readout');
+  if (!base || !reveal || !ring || !core || !clipCircle || !demo || !readout) return;
 
   const nodes = [
     { id:'docs', label:'Documents', x:110, y:270, r:15 },
@@ -112,16 +137,6 @@
   demo.addEventListener('pointermove', event => moveLens(event.clientX, event.clientY));
   demo.addEventListener('pointerdown', event => moveLens(event.clientX, event.clientY));
   updateReadout(activeEdge);
-
-  const observer = new IntersectionObserver(entries => {
-    entries.forEach(entry => {
-      if (entry.isIntersecting) {
-        entry.target.classList.add('visible');
-        observer.unobserve(entry.target);
-      }
-    });
-  }, { threshold: 0.12 });
-  document.querySelectorAll('.reveal').forEach(el => observer.observe(el));
 
   const steps = [...document.querySelectorAll('.trace-step')];
   const beam = document.getElementById('trace-beam');
