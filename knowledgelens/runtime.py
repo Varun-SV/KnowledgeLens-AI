@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 
 from .limits import (
+    MAX_API_KEY_CHARS,
     MAX_CHAT_QUERY_CHARS,
     MAX_ENTITY_LABEL_CHARS,
     MAX_EXTRACTION_FOCUS_CHARS,
@@ -28,6 +29,8 @@ def provider_state_key(provider: str) -> str:
 
 def provider_credential_error(provider: str, api_key: str) -> str | None:
     """Return a user-facing validation error for provider credentials."""
+    if len(api_key) > MAX_API_KEY_CHARS:
+        return f"API key must be at most {MAX_API_KEY_CHARS:,} characters."
     if provider == "OpenAI" and not api_key.strip():
         return "Enter an OpenAI API key before contacting the OpenAI endpoint."
     return None
