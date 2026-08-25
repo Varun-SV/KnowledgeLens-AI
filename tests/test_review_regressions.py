@@ -116,7 +116,9 @@ def test_request_failure_circuit_opens_and_success_resets_streak():
 
 def test_app_wires_failure_circuit_without_treating_graph_admission_as_request_failure():
     source = Path("KnowledgeLens_AI.py").read_text(encoding="utf-8")
-    loop = source[source.index("for index, chunk in enumerate(chunks, start=1):") : source.index("if graph.number_of_nodes() > 1:")]
+    loop = source[
+        source.index("for index, chunk in enumerate(chunks, start=1):") : source.index("if graph.number_of_nodes() > 1:")
+    ]
 
     request_call = loop.index("claims = extract_chunk_claims")
     request_failure = loop.index("circuit_open = request_circuit.record_failure()")
@@ -127,17 +129,28 @@ def test_app_wires_failure_circuit_without_treating_graph_admission_as_request_f
     assert "st.stop()" in loop
 
 
-def test_streamlit_rejects_oversized_files_at_widget_and_server_boundaries():
+def test_streamlit_uses_single_file_staging_with_remaining_aggregate_budget():
     app = Path("KnowledgeLens_AI.py").read_text(encoding="utf-8")
     config = Path(".streamlit/config.toml").read_text(encoding="utf-8")
     pyproject = Path("pyproject.toml").read_text(encoding="utf-8")
     requirements = Path("requirements.txt").read_text(encoding="utf-8")
 
-    state_widget = app[app.index('uploaded_state = st.file_uploader(') : app.index("try:", app.index('uploaded_state = st.file_uploader('))]
-    document_widget = app[app.index('uploaded_files = st.file_uploader(') : app.index('if st.button("Build evidence graph"')]
+    state_widget = app[
+        app.index('uploaded_state = st.file_uploader(') : app.index("try:", app.index('uploaded_state = st.file_uploader('))
+    ]
+    document_widget = app[
+        app.index('pending_source = st.file_uploader(') : app.index("if pending_source is not None:")
+    ]
 
-    assert "max_upload_size=MAX_STATE_BYTES // (1024 * 1024)" in state_widget
-    assert "max_upload_size=DEFAULT_INGESTION_LIMITS.max_upload_bytes // (1024 * 1024)" in document_widget
+    assert "max_upload_size=MAX_STATE_BYTES // _MIB" in state_widget
+    assert "accept_multiple_files=False" in document_widget
+    assert "max_upload_size=next_upload_limit" in document_widget
+    assert 'key=f"source_stager_{st.session_state.source_upload_revision}"' in document_widget
+    assert "next_upload_limit_mb(" in app
+    assert "remaining_upload_bytes(" in app
+    assert "stage_uploaded_file(" in app
+    assert "materialize_staged_uploads(st.session_state.staged_sources)" in app
+    assert "accept_multiple_files=True" not in app
     assert "maxUploadSize = 24" in config
     assert "maxUploadSize = 200" not in config
     assert '"streamlit>=1.54,<2"' in pyproject
