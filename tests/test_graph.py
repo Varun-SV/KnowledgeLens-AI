@@ -9,7 +9,7 @@ from knowledgelens.limits import MAX_ENTITY_LABEL_CHARS, MAX_EVIDENCE_CHARS, MAX
 from knowledgelens.models import Claim
 
 
-def _claim(subject, relation, obj, source, chunk_index, *, page=None, confidence=None):
+def _claim(subject, relation, obj, source, chunk_index, *, page=None, confidence=None, overlap_from_previous=False):
     return Claim(
         subject,
         relation,
@@ -19,6 +19,7 @@ def _claim(subject, relation, obj, source, chunk_index, *, page=None, confidence
         page=page,
         evidence=f"{subject} {relation} {obj}",
         confidence=confidence,
+        overlap_from_previous=overlap_from_previous,
     )
 
 
@@ -77,11 +78,19 @@ def test_claim_identity_deduplicates_case_and_nfkc_variants_after_node_resolutio
     assert {"Cache", "Latency"}.issubset(graph.nodes)
 
 
-def test_exact_same_source_claim_deduplicates_across_overlap_chunk_indices():
+def test_exact_same_source_claim_deduplicates_only_across_known_overlap_boundary():
     graph, node_map = create_graph("System")
     claims = [
         Claim("Cache", "reduces", "Latency", "doc.md", 7, evidence="Cache reduces Latency"),
-        Claim("Cache", "reduces", "Latency", "doc.md", 8, evidence="Cache reduces Latency"),
+        Claim(
+            "Cache",
+            "reduces",
+            "Latency",
+            "doc.md",
+            8,
+            evidence="Cache reduces Latency",
+            overlap_from_previous=True,
+        ),
     ]
 
     assert add_claims(graph, node_map, claims) == 1
@@ -90,11 +99,32 @@ def test_exact_same_source_claim_deduplicates_across_overlap_chunk_indices():
     assert data["chunk_index"] == 7
 
 
+def test_same_claim_at_distant_chunk_locations_keeps_independent_provenance():
+    graph, node_map = create_graph("System")
+    claims = [
+        Claim("Cache", "reduces", "Latency", "doc.md", 7, evidence="Cache reduces Latency"),
+        Claim("Cache", "reduces", "Latency", "doc.md", 50, evidence="Cache reduces Latency"),
+    ]
+
+    assert add_claims(graph, node_map, claims) == 2
+    assert graph.number_of_edges() == 2
+    assert {data["chunk_index"] for _, _, data in graph.edges(data=True)} == {7, 50}
+
+
 def test_same_claim_on_distinct_pdf_pages_keeps_independent_provenance():
     graph, node_map = create_graph("System")
     claims = [
         Claim("Cache", "reduces", "Latency", "doc.pdf", 7, page=2, evidence="Cache reduces Latency"),
-        Claim("Cache", "reduces", "Latency", "doc.pdf", 8, page=3, evidence="Cache reduces Latency"),
+        Claim(
+            "Cache",
+            "reduces",
+            "Latency",
+            "doc.pdf",
+            8,
+            page=3,
+            evidence="Cache reduces Latency",
+            overlap_from_previous=True,
+        ),
     ]
 
     assert add_claims(graph, node_map, claims) == 2
@@ -104,11 +134,11 @@ def test_same_claim_on_distinct_pdf_pages_keeps_independent_provenance():
 def test_graph_admission_rejects_malformed_direct_claims():
     graph, node_map = create_graph("System")
     malformed = [
-        Claim("A", "supports", "B", "doc.md", 1, evidence=""),
-        Claim("C", "supports", "D", "", 1, evidence="C supports D"),
-        Claim("E", "", "F", "doc.md", 1, evidence="E supports F"),
-        Claim("G", "supports", "H", "doc.md", 1, evidence="G supports H", confidence=True),
-        Claim("I", "supports", "J", "doc.md", 1, evidence="I supports J", confidence=math.nan),
+        Claim("Alpha", "supports", "Beta", "doc.md", 1, evidence=""),
+        Claim("Gamma", "supports", "Delta", "", 1, evidence="Gamma supports Delta"),
+        Claim("Epsilon", "", "Phi", "doc.md", 1, evidence="Epsilon supports Phi"),
+        Claim("Gamma", "supports", "Eta", "doc.md", 1, evidence="Gamma supports Eta", confidence=True),
+        Claim("Iota", "supports", "Kappa", "doc.md", 1, evidence="Iota supports Kappa", confidence=math.nan),
     ]
 
     assert add_claims(graph, node_map, malformed) == 0
@@ -119,10 +149,10 @@ def test_graph_admission_rejects_malformed_direct_claims():
 def test_graph_admission_rejects_oversized_direct_claim_fields():
     graph, node_map = create_graph("System")
     oversized = [
-        Claim("S" * (MAX_ENTITY_LABEL_CHARS + 1), "supports", "B", "doc.md", 1, evidence="evidence"),
-        Claim("A", "r" * (MAX_RELATION_CHARS + 1), "B", "doc.md", 1, evidence="evidence"),
-        Claim("A", "supports", "B", "s" * (MAX_SOURCE_ID_CHARS + 1), 1, evidence="evidence"),
-        Claim("A", "supports", "B", "doc.md", 1, evidence="e" * (MAX_EVIDENCE_CHARS + 1)),
+        Claim("S" * (MAX_ENTITY_LABEL_CHARS + 1), "supports", "Beta", "doc.md", 1, evidence="evidence"),
+        Claim("Alpha", "r" * (MAX_RELATION_CHARS + 1), "Beta", "doc.md", 1, evidence="evidence"),
+        Claim("Alpha", "supports", "Beta", "s" * (MAX_SOURCE_ID_CHARS + 1), 1, evidence="evidence"),
+        Claim("Alpha", "supports", "Beta", "doc.md", 1, evidence="e" * (MAX_EVIDENCE_CHARS + 1)),
     ]
 
     assert add_claims(graph, node_map, oversized) == 0
@@ -133,12 +163,12 @@ def test_node_capacity_fails_before_partial_graph_mutation(monkeypatch):
     monkeypatch.setattr(graph_module, "MAX_GRAPH_NODES", 2)
     graph, node_map = create_graph("System")
 
-    assert add_claims(graph, node_map, [_claim("A", "supports", "System", "doc.md", 1)]) == 1
+    assert add_claims(graph, node_map, [_claim("Alpha", "supports", "System", "doc.md", 1)]) == 1
     with pytest.raises(GraphCapacityError, match="nodes"):
-        add_claims(graph, node_map, [_claim("B", "supports", "System", "doc.md", 2)])
+        add_claims(graph, node_map, [_claim("Beta", "supports", "System", "doc.md", 2)])
 
-    assert set(graph.nodes) == {"System", "A"}
-    assert "b" not in node_map
+    assert set(graph.nodes) == {"System", "Alpha"}
+    assert "beta" not in node_map
     assert graph.number_of_edges() == 1
 
 
@@ -146,12 +176,12 @@ def test_edge_capacity_fails_before_adding_new_endpoint(monkeypatch):
     monkeypatch.setattr(graph_module, "MAX_GRAPH_EDGES", 1)
     graph, node_map = create_graph("System")
 
-    assert add_claims(graph, node_map, [_claim("A", "supports", "System", "doc.md", 1)]) == 1
+    assert add_claims(graph, node_map, [_claim("Alpha", "supports", "System", "doc.md", 1)]) == 1
     with pytest.raises(GraphCapacityError, match="edges"):
-        add_claims(graph, node_map, [_claim("A", "supports", "B", "doc.md", 2)])
+        add_claims(graph, node_map, [_claim("Alpha", "supports", "Beta", "doc.md", 2)])
 
-    assert "B" not in graph
-    assert "b" not in node_map
+    assert "Beta" not in graph
+    assert "beta" not in node_map
     assert graph.number_of_edges() == 1
 
 
