@@ -12,6 +12,8 @@ import networkx as nx
 from .limits import (
     MAX_ENTITY_LABEL_CHARS,
     MAX_EVIDENCE_CHARS,
+    MAX_GRAPH_EDGES,
+    MAX_GRAPH_NODES,
     MAX_PROVENANCE_STATUS_CHARS,
     MAX_RELATION_CHARS,
     MAX_SOURCE_ID_CHARS,
@@ -19,6 +21,10 @@ from .limits import (
 )
 from .models import Claim
 from .parsing import normalize_entity
+
+
+class GraphCapacityError(RuntimeError):
+    """Raised before a claim would grow a live graph beyond its safety envelope."""
 
 
 def canonical_key(label: str) -> str:
@@ -145,6 +151,18 @@ def _claim_edge_data(claim: Claim) -> dict[str, Any] | None:
     return data
 
 
+def _capacity_error(graph: nx.MultiDiGraph, new_nodes: int, new_edges: int) -> GraphCapacityError | None:
+    if graph.number_of_nodes() + new_nodes > MAX_GRAPH_NODES:
+        return GraphCapacityError(
+            f"Graph safety limit reached: at most {MAX_GRAPH_NODES:,} nodes may be built in one workspace."
+        )
+    if graph.number_of_edges() + new_edges > MAX_GRAPH_EDGES:
+        return GraphCapacityError(
+            f"Graph safety limit reached: at most {MAX_GRAPH_EDGES:,} edges may be built in one workspace."
+        )
+    return None
+
+
 def add_claims(
     graph: nx.MultiDiGraph,
     node_map: dict[str, str],
@@ -156,13 +174,31 @@ def add_claims(
         if edge_data is None:
             continue
 
+        subject_normalized = normalize_entity(claim.subject)
+        object_normalized = normalize_entity(claim.object)
+        if not subject_normalized or not object_normalized:
+            continue
+
+        subject_canonical, subject_display = subject_normalized
+        object_canonical, object_display = object_normalized
+        subject = node_map.get(subject_canonical, subject_display)
+        obj = node_map.get(object_canonical, object_display)
+        key = _claim_key(claim, subject, obj)
+        if graph.has_edge(subject, obj, key=key):
+            continue
+
+        new_canonicals = {
+            canonical
+            for canonical in (subject_canonical, object_canonical)
+            if canonical not in node_map
+        }
+        capacity_error = _capacity_error(graph, len(new_canonicals), 1)
+        if capacity_error:
+            raise capacity_error
+
         subject = get_or_create_node(graph, node_map, claim.subject)
         obj = get_or_create_node(graph, node_map, claim.object)
         if not subject or not obj:
-            continue
-
-        key = _claim_key(claim, subject, obj)
-        if graph.has_edge(subject, obj, key=key):
             continue
         graph.add_edge(subject, obj, key=key, **edge_data)
         added += 1
