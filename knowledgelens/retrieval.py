@@ -39,6 +39,11 @@ _MAX_FUZZY_CANDIDATES = 64
 _MAX_FUZZY_QUERY_CHARS = 512
 _MAX_FUZZY_NODE_CHARS = 240
 
+# NetworkX MultiDiGraph keys are hashable and their type is part of structural
+# identity. Keep the original key object in retrieval markers rather than coercing
+# it to text, so integer 1 and string "1" remain distinct end to end.
+EdgeMarker = tuple[str, str, object]
+
 
 @dataclass(slots=True)
 class _NodeCandidate:
@@ -287,26 +292,26 @@ def _claims_between(
     graph: nx.MultiDiGraph,
     left: str,
     right: str,
-) -> list[tuple[tuple[str, str, str], str]]:
-    claims: list[tuple[tuple[str, str, str], str]] = []
+) -> list[tuple[EdgeMarker, str]]:
+    claims: list[tuple[EdgeMarker, str]] = []
     for subject, obj in ((left, right), (right, left)):
         for key, data in graph.get_edge_data(subject, obj, default={}).items():
             if not _is_evidentiary(data):
                 continue
-            marker = (str(subject), str(obj), str(key))
+            marker: EdgeMarker = (str(subject), str(obj), key)
             claims.append((marker, _claim_line(str(subject), str(obj), data)))
     return claims
 
 
-def _incident_claims(graph: nx.MultiDiGraph, node: str) -> list[tuple[tuple[str, str, str], str]]:
-    claims: list[tuple[tuple[str, str, str], str]] = []
+def _incident_claims(graph: nx.MultiDiGraph, node: str) -> list[tuple[EdgeMarker, str]]:
+    claims: list[tuple[EdgeMarker, str]] = []
     for subject, obj, key, data in graph.out_edges(node, keys=True, data=True):
         if _is_evidentiary(data):
-            marker = (str(subject), str(obj), str(key))
+            marker: EdgeMarker = (str(subject), str(obj), key)
             claims.append((marker, _claim_line(str(subject), str(obj), data)))
     for subject, obj, key, data in graph.in_edges(node, keys=True, data=True):
         if _is_evidentiary(data):
-            marker = (str(subject), str(obj), str(key))
+            marker = (str(subject), str(obj), key)
             claims.append((marker, _claim_line(str(subject), str(obj), data)))
     return claims
 
@@ -326,7 +331,7 @@ def retrieve_graph_context(graph: nx.MultiDiGraph, query: str, max_chars: int = 
     seeds = relevant_nodes(graph, query)
     simple = _evidentiary_graph(graph)
     lines: list[str] = []
-    seen: set[tuple[str, str, str]] = set()
+    seen: set[EdgeMarker] = set()
     used_chars = 0
 
     # Connecting paths are the highest-value context for multi-entity questions, so
@@ -347,7 +352,7 @@ def retrieve_graph_context(graph: nx.MultiDiGraph, query: str, max_chars: int = 
                 # source/location claim citations. Emit it only when at least one
                 # source-backed claim for every hop also fits atomically.
                 path_line = f"Graph path: {' -- '.join(map(str, path))}"
-                required_claims: list[tuple[tuple[str, str, str], str]] = []
+                required_claims: list[tuple[EdgeMarker, str]] = []
                 path_is_supported = True
                 for left, right in zip(path, path[1:], strict=False):
                     hop_claims = [
