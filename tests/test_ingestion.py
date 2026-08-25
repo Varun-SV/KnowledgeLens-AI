@@ -71,6 +71,16 @@ def test_mid_content_oversized_split_retains_overlap():
     assert chunks[0][-20:] == chunks[1][:20]
 
 
+def test_prepare_chunks_marks_only_forced_overlap_successors():
+    result = prepare_chunks([UploadedBytes("forced.txt", b"X" * 5000)])
+
+    assert result.fatal_error is None
+    assert len(result.chunks) == 2
+    assert result.chunks[0].overlap_from_previous is False
+    assert result.chunks[1].overlap_from_previous is True
+    assert result.chunks[0].text[-240:] == result.chunks[1].text[:240]
+
+
 def test_upload_byte_budget_rejects_before_any_extraction(monkeypatch):
     def must_not_extract(_uploaded_file):
         raise AssertionError("extraction must not run after upload budget rejection")
