@@ -6,6 +6,13 @@ import unicodedata
 from collections.abc import Iterable
 from typing import Any
 
+from .limits import (
+    MAX_ENTITY_LABEL_CHARS,
+    MAX_EVIDENCE_CHARS,
+    MAX_RELATION_CHARS,
+    MAX_SOURCE_ID_CHARS,
+    is_bounded_text,
+)
 from .models import Claim, DocumentChunk
 
 _IDENTIFIER_PUNCTUATION = frozenset("+#._-/:@")
@@ -69,7 +76,7 @@ def normalize_entity(raw: Any) -> tuple[str, str] | None:
         return None
 
     display = " ".join(str(raw).strip().split())
-    if not display:
+    if not is_bounded_text(display, MAX_ENTITY_LABEL_CHARS):
         return None
 
     stopwords = {"the", "a", "an", "and", "or", "but", "in", "on", "at", "to", "for"}
@@ -87,7 +94,7 @@ def normalize_relation(raw: Any) -> tuple[str, str] | None:
     if raw is None:
         return None
     display = " ".join(str(raw).strip().split())
-    if not display:
+    if not is_bounded_text(display, MAX_RELATION_CHARS):
         return None
     canonical = canonicalize_label(display)
     if not canonical:
@@ -106,7 +113,7 @@ def _strip_master_concept_prefix(concept: str) -> str:
 
 
 def parse_master_concept_response(text: str) -> str:
-    """Return a concise concept line, tolerating common fences and explanatory prefixes."""
+    """Return a concise bounded concept line, tolerating fences and explanatory prefixes."""
     cleaned = text.strip()
     if cleaned.startswith("```"):
         first_newline = cleaned.find("\n")
@@ -118,7 +125,8 @@ def parse_master_concept_response(text: str) -> str:
     for raw_line in cleaned.splitlines():
         concept = raw_line.strip().strip("\"'`").strip()
         if concept:
-            return _strip_master_concept_prefix(concept)
+            concept = _strip_master_concept_prefix(concept)
+            return concept if is_bounded_text(concept, MAX_ENTITY_LABEL_CHARS) else ""
     return ""
 
 
@@ -149,6 +157,9 @@ def _claim_from_mapping(
     chunk: DocumentChunk,
     normalized_source_text: str,
 ) -> Claim | None:
+    if not is_bounded_text(chunk.source, MAX_SOURCE_ID_CHARS):
+        return None
+
     subject = item.get("subject") or item.get("s")
     relation = item.get("relation") or item.get("relationship") or item.get("predicate") or item.get("r")
     obj = item.get("object") or item.get("o")
@@ -160,7 +171,7 @@ def _claim_from_mapping(
         return None
 
     evidence = " ".join(str(item.get("evidence") or item.get("quote") or "").split())
-    if not evidence or len(evidence) > 500:
+    if not is_bounded_text(evidence, MAX_EVIDENCE_CHARS):
         return None
     normalized_evidence = _evidence_match_text(evidence)
     if not normalized_evidence or normalized_evidence not in normalized_source_text:
@@ -192,7 +203,7 @@ def _iter_json_items(payload: Any) -> Iterable[dict[str, Any]]:
 
 
 def parse_claims(text: str, chunk: DocumentChunk) -> list[Claim]:
-    """Parse claims and accept only source-verifiable verbatim evidence."""
+    """Parse claims and accept only bounded, source-verifiable verbatim evidence."""
     cleaned = _strip_markdown_fence(text)
     claims: list[Claim] = []
     normalized_source_text = _evidence_match_text(chunk.text)
