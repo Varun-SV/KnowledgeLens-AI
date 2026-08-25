@@ -19,7 +19,7 @@ from knowledgelens.models import DocumentChunk
 from knowledgelens.parsing import parse_claims, parse_master_concept_response
 from knowledgelens.persistence import deserialize_graph_state, serialize_graph_state
 from knowledgelens.retrieval import retrieve_graph_context
-from knowledgelens.runtime import no_claims_build_error, provider_credential_error
+from knowledgelens.runtime import no_claims_build_error, provider_state_key, request_configuration_error
 from knowledgelens.security import EndpointPolicyError, env_flag, resolve_endpoint, validate_endpoint
 
 APP_VERSION = "0.2.0"
@@ -243,6 +243,8 @@ def visualize_graph(graph: nx.MultiDiGraph, height: int = 760) -> None:
             title += f"\nEvidence: {evidence[:300]}"
         if data.get("synthetic"):
             title += "\nSynthetic overview link — not used as grounded chat evidence."
+        elif data.get("provenance_status") == "legacy-aggregated":
+            title += "\nLegacy aggregated relation — original source pairing/evidence was not preserved; excluded from grounded chat."
 
         network.add_edge(
             subject,
@@ -344,6 +346,7 @@ with st.sidebar:
 
     default_index = 0 if env_flag("KNOWLEDGELENS_ALLOW_LOCAL_ENDPOINTS") else providers.index("OpenAI")
     provider = st.selectbox("Provider", providers, index=default_index)
+    provider_key = provider_state_key(provider)
     base_url = configured_endpoint(provider)
     st.text_input(
         "Endpoint",
@@ -354,10 +357,11 @@ with st.sidebar:
     api_key = st.text_input(
         "API key",
         type="password",
-        help="Required for OpenAI; optional for local/configured endpoints. Never written to graph exports.",
+        key=f"api_key_{provider_key}",
+        help="Required for OpenAI; optional for local/configured endpoints. Credentials are isolated per provider and never written to graph exports.",
     )
     default_model = "llama3.1" if provider != "OpenAI" else "gpt-4o-mini"
-    model_name = st.text_input("Model", value=default_model)
+    model_name = st.text_input("Model", value=default_model, key=f"model_{provider_key}")
     temperature = st.slider("Temperature", 0.0, 1.0, 0.1, 0.05)
 
     try:
@@ -400,6 +404,7 @@ with st.sidebar:
             st.session_state.graph_revision += 1
             st.success(
                 f"Loaded {loaded.number_of_nodes()} nodes / {loaded_stats['claims']} source-backed claims"
+                f" / {loaded_stats['legacy_claims']} legacy ungrounded claims"
                 f" / {loaded_stats['topology_edges']} topology edges"
             )
         except Exception as exc:
@@ -434,12 +439,9 @@ if st.button("Build evidence graph", type="primary", use_container_width=True):
     if not uploaded_files:
         st.error("Add at least one document first.")
         st.stop()
-    if not model_name.strip():
-        st.error("Enter a model name.")
-        st.stop()
-    credential_error = provider_credential_error(provider, api_key)
-    if credential_error:
-        st.error(credential_error)
+    request_error = request_configuration_error(provider, api_key, model_name)
+    if request_error:
+        st.error(request_error)
         st.stop()
     try:
         validate_endpoint(base_url)
@@ -517,6 +519,7 @@ if st.session_state.processing_complete or st.session_state.kg_graph.number_of_n
     export_data = graph_to_export(graph)
     source_count = export_data["stats"]["sources"]
     claim_count = export_data["stats"]["claims"]
+    legacy_claim_count = export_data["stats"]["legacy_claims"]
 
     st.divider()
     c1, c2, c3, c4 = st.columns(4)
@@ -528,7 +531,8 @@ if st.session_state.processing_complete or st.session_state.kg_graph.number_of_n
     st.subheader("Explore the evidence graph")
     st.caption(
         f"Hover an edge to see its source and evidence. The graph also contains "
-        f"{export_data['stats']['topology_edges']} synthetic topology edges, which are never counted as claims."
+        f"{export_data['stats']['topology_edges']} synthetic topology edges and {legacy_claim_count} legacy relations; "
+        "neither is counted as an auditable claim or used for grounded chat."
     )
     visualize_graph(graph)
 
@@ -554,6 +558,9 @@ if st.session_state.processing_complete or st.session_state.kg_graph.number_of_n
         source = claim["source"]
         if claim.get("synthetic"):
             source = "SYNTHETIC TOPOLOGY · non-evidentiary"
+        elif claim.get("provenance_status") == "legacy-aggregated":
+            candidates = ", ".join(claim.get("legacy_sources", [])) or "unknown"
+            source = f"LEGACY AGGREGATED · non-grounded · candidates: {candidates}"
         elif not source and claim.get("legacy_sources"):
             source = "legacy candidates: " + ", ".join(claim["legacy_sources"])
         source = source or "unknown source"
@@ -575,26 +582,31 @@ if st.session_state.processing_complete or st.session_state.kg_graph.number_of_n
 
     user_query = st.chat_input("How are these concepts connected? What evidence supports this claim?")
     if user_query:
-        st.session_state.chat_history.append({"role": "user", "content": user_query})
-        context = retrieve_graph_context(graph, user_query)
-        try:
-            with st.spinner("Tracing graph evidence…"):
-                answer = call_llm_api(
-                    base_url,
-                    api_key,
-                    model_name,
-                    (
-                        "Answer ONLY from the supplied KnowledgeLens graph context. "
-                        "Every factual sentence must cite the bracketed source/location supporting it. "
-                        "Synthetic overview links are excluded from this context and must never be treated as evidence. "
-                        "If the graph lacks enough evidence, say that clearly. Do not use outside knowledge."
-                    ),
-                    f"Graph context:\n{context}\n\nQuestion: {user_query}",
-                    temperature,
-                )
-            st.session_state.chat_history.append({"role": "assistant", "content": answer})
-        except Exception as exc:
-            st.error(f"Could not answer: {exc}")
+        request_error = request_configuration_error(provider, api_key, model_name)
+        if request_error:
+            st.error(request_error)
+        else:
+            st.session_state.chat_history.append({"role": "user", "content": user_query})
+            context = retrieve_graph_context(graph, user_query)
+            try:
+                with st.spinner("Tracing graph evidence…"):
+                    answer = call_llm_api(
+                        base_url,
+                        api_key,
+                        model_name,
+                        (
+                            "Answer ONLY from the supplied KnowledgeLens graph context. "
+                            "Every factual sentence must cite the bracketed source/location supporting it. "
+                            "Lines beginning 'Graph path:' are routing metadata, not citations. "
+                            "Synthetic overview links and legacy aggregated relations are excluded from grounded context. "
+                            "If the graph lacks enough evidence, say that clearly. Do not use outside knowledge."
+                        ),
+                        f"Graph context:\n{context}\n\nQuestion: {user_query}",
+                        temperature,
+                    )
+                st.session_state.chat_history.append({"role": "assistant", "content": answer})
+            except Exception as exc:
+                st.error(f"Could not answer: {exc}")
 
     for message in st.session_state.chat_history:
         with st.chat_message(message["role"]):
