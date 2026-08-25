@@ -17,7 +17,8 @@ from knowledgelens.http_client import PinnedRequestError, post_json_pinned
 from knowledgelens.ingestion import prepare_chunks
 from knowledgelens.models import DocumentChunk
 from knowledgelens.parsing import parse_claims, parse_master_concept_response
-from knowledgelens.persistence import deserialize_graph_state, serialize_graph_state
+from knowledgelens.persistence import MAX_STATE_BYTES, deserialize_graph_state, serialize_graph_state
+from knowledgelens.presentation import safe_tooltip_text
 from knowledgelens.retrieval import retrieve_graph_context
 from knowledgelens.runtime import no_claims_build_error, provider_state_key, request_configuration_error
 from knowledgelens.security import EndpointPolicyError, env_flag, resolve_endpoint, validate_endpoint
@@ -209,7 +210,7 @@ def visualize_graph(graph: nx.MultiDiGraph, height: int = 760) -> None:
         network.add_node(
             node,
             label=str(node),
-            title=f"{node}\n{degree} connected graph edges",
+            title=safe_tooltip_text(f"{node}\n{degree} connected graph edges"),
             shape="star" if is_master else "dot",
             size=size,
             color="#FFB45C" if is_master else "#68E1FD",
@@ -250,7 +251,7 @@ def visualize_graph(graph: nx.MultiDiGraph, height: int = 760) -> None:
             subject,
             obj,
             label=relation[:18] + ("…" if len(relation) > 18 else ""),
-            title=title,
+            title=safe_tooltip_text(title),
             color="rgba(126, 145, 180, 0.42)",
             arrows="to",
             smooth=_parallel_edge_smooth(edge_index, edge_totals[pair]),
@@ -298,10 +299,22 @@ def visualize_graph(graph: nx.MultiDiGraph, height: int = 760) -> None:
                 pass
 
 
-def _state_upload_fingerprint(uploaded_state) -> str | None:
+def _state_upload_payload(uploaded_state) -> bytes | None:
     if uploaded_state is None:
         return None
-    return hashlib.sha256(uploaded_state.getvalue()).hexdigest()
+    size = getattr(uploaded_state, "size", None)
+    if isinstance(size, int) and not isinstance(size, bool) and size > MAX_STATE_BYTES:
+        raise ValueError(f"Graph state exceeds the {MAX_STATE_BYTES // (1024 * 1024)} MiB safety limit.")
+    payload = uploaded_state.getvalue()
+    if len(payload) > MAX_STATE_BYTES:
+        raise ValueError(f"Graph state exceeds the {MAX_STATE_BYTES // (1024 * 1024)} MiB safety limit.")
+    return bytes(payload)
+
+
+def _state_payload_fingerprint(payload: bytes | None) -> str | None:
+    if payload is None:
+        return None
+    return hashlib.sha256(payload).hexdigest()
 
 
 st.set_page_config(page_title="KnowledgeLens AI", page_icon="◉", layout="wide")
@@ -389,28 +402,35 @@ with st.sidebar:
     st.divider()
     st.header("Persistence")
     uploaded_state = st.file_uploader("Load graph state", type=["json"], key="state_loader")
-    current_state_fingerprint = _state_upload_fingerprint(uploaded_state)
-    if uploaded_state is None:
-        st.session_state.loaded_state_fingerprint = None
-    elif current_state_fingerprint != st.session_state.loaded_state_fingerprint:
-        try:
-            loaded, master, node_map = deserialize_graph_state(uploaded_state.getvalue())
-            loaded_stats = graph_to_export(loaded)["stats"]
-            st.session_state.kg_graph = loaded
-            st.session_state.master_concept = master
-            st.session_state.node_canonical_map = node_map
-            st.session_state.processing_complete = True
-            st.session_state.chat_history = []
-            st.session_state.graph_revision += 1
-            st.success(
-                f"Loaded {loaded.number_of_nodes()} nodes / {loaded_stats['claims']} source-backed claims"
-                f" / {loaded_stats['legacy_claims']} legacy ungrounded claims"
-                f" / {loaded_stats['topology_edges']} topology edges"
-            )
-        except Exception as exc:
-            st.error(f"Could not load graph state: {exc}")
-        finally:
-            st.session_state.loaded_state_fingerprint = current_state_fingerprint
+    try:
+        state_payload = _state_upload_payload(uploaded_state)
+    except ValueError as exc:
+        state_payload = None
+        current_state_fingerprint = st.session_state.loaded_state_fingerprint
+        st.error(str(exc))
+    else:
+        current_state_fingerprint = _state_payload_fingerprint(state_payload)
+        if uploaded_state is None:
+            st.session_state.loaded_state_fingerprint = None
+        elif current_state_fingerprint != st.session_state.loaded_state_fingerprint:
+            try:
+                loaded, master, node_map = deserialize_graph_state(state_payload or b"")
+                loaded_stats = graph_to_export(loaded)["stats"]
+                st.session_state.kg_graph = loaded
+                st.session_state.master_concept = master
+                st.session_state.node_canonical_map = node_map
+                st.session_state.processing_complete = True
+                st.session_state.chat_history = []
+                st.session_state.graph_revision += 1
+                st.success(
+                    f"Loaded {loaded.number_of_nodes()} nodes / {loaded_stats['claims']} source-backed claims"
+                    f" / {loaded_stats['legacy_claims']} legacy ungrounded claims"
+                    f" / {loaded_stats['topology_edges']} topology edges"
+                )
+            except Exception as exc:
+                st.error(f"Could not load graph state: {exc}")
+            finally:
+                st.session_state.loaded_state_fingerprint = current_state_fingerprint
 
     if st.button("Clear workspace", use_container_width=True):
         st.session_state.kg_graph = nx.MultiDiGraph()
@@ -450,9 +470,13 @@ if st.button("Build evidence graph", type="primary", use_container_width=True):
         st.stop()
 
     with st.spinner("Reading and chunking sources…"):
-        chunks, ingest_warnings = prepare_chunks(uploaded_files)
+        ingest_result = prepare_chunks(uploaded_files)
+    chunks, ingest_warnings = ingest_result
     for warning in ingest_warnings:
         st.warning(warning)
+    if ingest_result.fatal_error:
+        st.error(ingest_result.fatal_error)
+        st.stop()
     if not chunks:
         st.error("No extractable text was found. Scanned PDFs currently require OCR before upload.")
         st.stop()
