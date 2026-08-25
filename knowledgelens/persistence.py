@@ -11,6 +11,8 @@ from .graph import canonical_key
 from .limits import (
     MAX_ENTITY_LABEL_CHARS,
     MAX_EVIDENCE_CHARS,
+    MAX_GRAPH_EDGES,
+    MAX_GRAPH_NODES,
     MAX_PROVENANCE_STATUS_CHARS,
     MAX_RELATION_CHARS,
     MAX_SOURCE_ID_CHARS,
@@ -19,8 +21,8 @@ from .limits import (
 
 STATE_SCHEMA_VERSION = 2
 MAX_STATE_BYTES = 8 * 1024 * 1024
-MAX_STATE_NODES = 10_000
-MAX_STATE_EDGES = 25_000
+MAX_STATE_NODES = MAX_GRAPH_NODES
+MAX_STATE_EDGES = MAX_GRAPH_EDGES
 _NODE_LINK_META = "_knowledgelens_node_link_fields"
 _NODE_LINK_FIELDS = {
     "source": "__kl_from",
@@ -73,7 +75,6 @@ def migrate_legacy_graph(graph: nx.Graph, master_concept: str | None = None) -> 
             )
             provenance_status = "legacy-aggregated"
 
-        # Create one claim per relation, not a relation×source Cartesian product.
         for relation in relations:
             migrated.add_edge(
                 subject,
@@ -133,8 +134,6 @@ def _validate_state_size(raw: bytes | str) -> None:
     if isinstance(raw, bytes):
         size = len(raw)
     else:
-        # UTF-8 uses at least one byte per code point. Reject obvious oversize
-        # strings before allocating another encoded copy, then verify exact bytes.
         if len(raw) > MAX_STATE_BYTES:
             raise ValueError(f"Graph state exceeds the {MAX_STATE_BYTES // (1024 * 1024)} MiB safety limit.")
         size = len(raw.encode("utf-8"))
@@ -147,10 +146,6 @@ def _node_link_kwargs(graph_data: dict[str, Any], edge_field: str) -> tuple[dict
     payload = dict(graph_data)
     field_metadata = payload.pop(_NODE_LINK_META, None)
     if field_metadata is None:
-        # Compatibility path for early v2 snapshots written before KnowledgeLens
-        # reserved its endpoint-field names. Such states may still fail the v2
-        # provenance validator if NetworkX's `source` endpoint key overwrote the
-        # claim's own provenance `source` attribute; failing closed is intentional.
         return payload, {"edges": edge_field}
 
     if field_metadata != _NODE_LINK_FIELDS:
@@ -163,10 +158,6 @@ def _node_link_graph(graph_data: dict[str, Any], schema_version: int) -> nx.Grap
     _validate_graph_data_shape(graph_data, schema_version)
     _validate_serialized_complexity(graph_data)
 
-    # Pin the edge collection for new state while accepting the NetworkX <=3.5
-    # `links` collection. Endpoint/name/key fields are separately namespaced so
-    # claim attributes such as provenance `source` can never collide with node-link
-    # structural keys.
     if "edges" in graph_data:
         payload, kwargs = _node_link_kwargs(graph_data, "edges")
         return nx.node_link_graph(payload, **kwargs)
@@ -318,9 +309,6 @@ def deserialize_graph_state(raw: bytes | str) -> tuple[nx.MultiDiGraph, str | No
         loaded = loaded_raw
     else:
         _validate_node_ids(loaded_raw)
-        # Main-branch v1 exports always recorded one master node plus the matching
-        # `master_concept`. Reject malformed legacy states rather than returning a
-        # workspace whose UI/retrieval disagree about which node is the master.
         _validate_master(loaded_raw, master)
         loaded = migrate_legacy_graph(loaded_raw, master_concept=master)
         _validate_v2_graph(loaded, master)
