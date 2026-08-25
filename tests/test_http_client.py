@@ -1,5 +1,7 @@
 import ipaddress
 
+import pytest
+
 from knowledgelens import http_client
 from knowledgelens.security import ValidatedEndpoint
 
@@ -29,15 +31,8 @@ class _FakePool:
         self.captured["closed"] = True
 
 
-def test_https_request_uses_validated_ip_and_original_tls_identity(monkeypatch):
-    captured = {}
-    monkeypatch.setattr(
-        http_client.urllib3,
-        "HTTPSConnectionPool",
-        lambda **kwargs: _FakePool(captured, **kwargs),
-    )
-
-    endpoint = ValidatedEndpoint(
+def _endpoint() -> ValidatedEndpoint:
+    return ValidatedEndpoint(
         base_url="https://rebind.example/api",
         scheme="https",
         hostname="rebind.example",
@@ -47,7 +42,16 @@ def test_https_request_uses_validated_ip_and_original_tls_identity(monkeypatch):
         addresses=(ipaddress.ip_address("93.184.216.34"),),
     )
 
-    status, body = http_client.post_json_pinned(endpoint, {"model": "test"}, {"Authorization": "Bearer secret"})
+
+def test_https_request_uses_validated_ip_and_original_tls_identity(monkeypatch):
+    captured = {}
+    monkeypatch.setattr(
+        http_client.urllib3,
+        "HTTPSConnectionPool",
+        lambda **kwargs: _FakePool(captured, **kwargs),
+    )
+
+    status, body = http_client.post_json_pinned(_endpoint(), {"model": "test"}, {"Authorization": "Bearer secret"})
 
     assert status == 200
     assert b'"content":"ok"' in body
@@ -59,3 +63,14 @@ def test_https_request_uses_validated_ip_and_original_tls_identity(monkeypatch):
     assert captured["request_kwargs"]["headers"]["Authorization"] == "Bearer secret"
     assert captured["request_kwargs"]["redirect"] is False
     assert captured["closed"] is True
+
+
+def test_oversized_request_is_rejected_before_opening_connection(monkeypatch):
+    def must_not_connect(*_args, **_kwargs):
+        raise AssertionError("pool must not be constructed for oversized request")
+
+    monkeypatch.setattr(http_client, "_pool_for", must_not_connect)
+    payload = {"messages": [{"role": "user", "content": "x" * http_client._MAX_REQUEST_BYTES}]}
+
+    with pytest.raises(http_client.PinnedRequestError, match="request exceeded"):
+        http_client.post_json_pinned(_endpoint(), payload)
