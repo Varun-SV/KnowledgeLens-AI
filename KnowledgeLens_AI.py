@@ -15,12 +15,19 @@ from pyvis.network import Network
 from knowledgelens.graph import add_claims, add_master_links, create_graph, graph_to_export, top_entities
 from knowledgelens.http_client import PinnedRequestError, post_json_pinned
 from knowledgelens.ingestion import prepare_chunks
+from knowledgelens.limits import MAX_ENTITY_LABEL_CHARS
 from knowledgelens.models import DocumentChunk
 from knowledgelens.parsing import parse_claims, parse_master_concept_response
 from knowledgelens.persistence import MAX_STATE_BYTES, deserialize_graph_state, serialize_graph_state
 from knowledgelens.presentation import safe_tooltip_text
 from knowledgelens.retrieval import retrieve_graph_context
-from knowledgelens.runtime import no_claims_build_error, provider_state_key, request_configuration_error
+from knowledgelens.runtime import (
+    grounded_chat_messages,
+    manual_master_concept_error,
+    no_claims_build_error,
+    provider_state_key,
+    request_configuration_error,
+)
 from knowledgelens.security import EndpointPolicyError, env_flag, resolve_endpoint, validate_endpoint
 
 APP_VERSION = "0.2.0"
@@ -386,7 +393,11 @@ with st.sidebar:
     st.divider()
     st.header("Graph extraction")
     auto_detect = st.checkbox("Auto-detect master concept", value=True)
-    manual_master = st.text_input("Master concept", disabled=auto_detect)
+    manual_master = st.text_input(
+        "Master concept",
+        disabled=auto_detect,
+        max_chars=MAX_ENTITY_LABEL_CHARS,
+    )
     master_link_count = st.slider(
         "Overview links",
         3,
@@ -462,6 +473,10 @@ if st.button("Build evidence graph", type="primary", use_container_width=True):
     request_error = request_configuration_error(provider, api_key, model_name)
     if request_error:
         st.error(request_error)
+        st.stop()
+    master_error = manual_master_concept_error(auto_detect, manual_master)
+    if master_error:
+        st.error(master_error)
         st.stop()
     try:
         validate_endpoint(base_url)
@@ -562,13 +577,22 @@ if st.session_state.processing_complete or st.session_state.kg_graph.number_of_n
 
     st.subheader("Export & continue later")
     e1, e2, e3 = st.columns(3)
-    e1.download_button(
-        "Graph state",
-        serialize_graph_state(graph, st.session_state.master_concept, st.session_state.node_canonical_map),
-        file_name="knowledgelens_state.json",
-        mime="application/json",
-        use_container_width=True,
-    )
+    try:
+        state_export = serialize_graph_state(
+            graph,
+            st.session_state.master_concept,
+            st.session_state.node_canonical_map,
+        )
+    except ValueError as exc:
+        e1.warning(f"Graph state export unavailable: {exc}")
+    else:
+        e1.download_button(
+            "Graph state",
+            state_export,
+            file_name="knowledgelens_state.json",
+            mime="application/json",
+            use_container_width=True,
+        )
     e2.download_button(
         "Evidence graph JSON",
         json.dumps(export_data, ensure_ascii=False, indent=2),
@@ -612,20 +636,15 @@ if st.session_state.processing_complete or st.session_state.kg_graph.number_of_n
         else:
             st.session_state.chat_history.append({"role": "user", "content": user_query})
             context = retrieve_graph_context(graph, user_query)
+            system_prompt, user_prompt = grounded_chat_messages(context, user_query)
             try:
                 with st.spinner("Tracing graph evidence…"):
                     answer = call_llm_api(
                         base_url,
                         api_key,
                         model_name,
-                        (
-                            "Answer ONLY from the supplied KnowledgeLens graph context. "
-                            "Every factual sentence must cite the bracketed source/location supporting it. "
-                            "Lines beginning 'Graph path:' are routing metadata, not citations. "
-                            "Synthetic overview links and legacy aggregated relations are excluded from grounded context. "
-                            "If the graph lacks enough evidence, say that clearly. Do not use outside knowledge."
-                        ),
-                        f"Graph context:\n{context}\n\nQuestion: {user_query}",
+                        system_prompt,
+                        user_prompt,
                         temperature,
                     )
                 st.session_state.chat_history.append({"role": "assistant", "content": answer})
