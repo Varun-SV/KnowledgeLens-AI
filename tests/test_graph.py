@@ -1,8 +1,10 @@
 import math
 
 import networkx as nx
+import pytest
 
 from knowledgelens.graph import add_claims, add_master_links, create_graph, graph_to_export
+from knowledgelens.limits import MAX_ENTITY_LABEL_CHARS, MAX_EVIDENCE_CHARS, MAX_RELATION_CHARS, MAX_SOURCE_ID_CHARS
 from knowledgelens.models import Claim
 
 
@@ -23,6 +25,11 @@ def test_master_node_cannot_be_downgraded():
     graph, node_map = create_graph("Machine Learning")
     add_claims(graph, node_map, [_claim("Machine Learning", "uses", "Data", "paper.pdf", 1)])
     assert graph.nodes["Machine Learning"]["type"] == "master"
+
+
+def test_master_concept_is_bounded_at_graph_creation():
+    with pytest.raises(ValueError, match="Master concept"):
+        create_graph("M" * (MAX_ENTITY_LABEL_CHARS + 1))
 
 
 def test_multiple_claims_keep_independent_provenance():
@@ -106,6 +113,19 @@ def test_graph_admission_rejects_malformed_direct_claims():
     assert add_claims(graph, node_map, malformed) == 0
     assert graph.number_of_edges() == 0
     assert graph_to_export(graph)["stats"]["claims"] == 0
+
+
+def test_graph_admission_rejects_oversized_direct_claim_fields():
+    graph, node_map = create_graph("System")
+    oversized = [
+        Claim("S" * (MAX_ENTITY_LABEL_CHARS + 1), "supports", "B", "doc.md", 1, evidence="evidence"),
+        Claim("A", "r" * (MAX_RELATION_CHARS + 1), "B", "doc.md", 1, evidence="evidence"),
+        Claim("A", "supports", "B", "s" * (MAX_SOURCE_ID_CHARS + 1), 1, evidence="evidence"),
+        Claim("A", "supports", "B", "doc.md", 1, evidence="e" * (MAX_EVIDENCE_CHARS + 1)),
+    ]
+
+    assert add_claims(graph, node_map, oversized) == 0
+    assert graph.number_of_edges() == 0
 
 
 def test_synthetic_master_links_do_not_count_as_sources():
