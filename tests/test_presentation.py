@@ -1,5 +1,5 @@
 from knowledgelens.limits import MAX_VISUALIZATION_EDGES, MAX_VISUALIZATION_NODES
-from knowledgelens.presentation import safe_tooltip_text, visualization_limit_error
+from knowledgelens.presentation import parallel_edge_smooth, safe_tooltip_text, visualization_limit_error
 
 
 def test_tooltip_text_escapes_html_injection_payloads():
@@ -11,6 +11,14 @@ def test_tooltip_text_escapes_html_injection_payloads():
     assert "onerror=alert(2)>" not in escaped
     assert "&lt;a href=&quot;" in escaped
     assert "&lt;img" in escaped
+
+
+def test_parallel_edge_curves_remain_unique_at_supported_edge_budget():
+    configurations = [parallel_edge_smooth(index, MAX_VISUALIZATION_EDGES) for index in range(MAX_VISUALIZATION_EDGES)]
+    identities = {(item["type"], item.get("roundness")) for item in configurations}
+
+    assert len(identities) == MAX_VISUALIZATION_EDGES
+    assert all(0 < float(item["roundness"]) < 1 for item in configurations)
 
 
 def test_visualization_budget_allows_boundary_and_blocks_oversize():
