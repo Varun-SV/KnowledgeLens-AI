@@ -15,6 +15,13 @@ def canonical_key(label: str) -> str:
     return normalized[0] if normalized else label.strip().casefold()
 
 
+def is_auditable_claim_data(data: dict[str, Any]) -> bool:
+    """Return whether an edge has source-backed provenance safe for grounded use."""
+    if bool(data.get("synthetic", False)):
+        return False
+    return data.get("provenance_status") != "legacy-aggregated"
+
+
 def create_graph(master_concept: str) -> tuple[nx.MultiDiGraph, dict[str, str]]:
     graph = nx.MultiDiGraph()
     graph.add_node(master_concept, label=master_concept, type="master")
@@ -153,7 +160,12 @@ def graph_to_export(graph: nx.MultiDiGraph) -> dict[str, Any]:
             if legacy_source:
                 source_counts[str(legacy_source)] += 1
 
-    evidentiary_claims = sum(1 for claim in claims if not claim["synthetic"])
+    auditable_claims = sum(1 for claim in claims if is_auditable_claim_data(claim))
+    legacy_claims = sum(
+        1
+        for claim in claims
+        if not claim["synthetic"] and claim.get("provenance_status") == "legacy-aggregated"
+    )
     topology_edges = sum(1 for claim in claims if claim["synthetic"])
 
     return {
@@ -161,7 +173,8 @@ def graph_to_export(graph: nx.MultiDiGraph) -> dict[str, Any]:
         "master_concept": masters[0] if masters else None,
         "stats": {
             "nodes": graph.number_of_nodes(),
-            "claims": evidentiary_claims,
+            "claims": auditable_claims,
+            "legacy_claims": legacy_claims,
             "topology_edges": topology_edges,
             "edges_total": len(claims),
             "sources": len(source_counts),
