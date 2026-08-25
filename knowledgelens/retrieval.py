@@ -238,8 +238,42 @@ def retrieve_graph_context(graph: nx.MultiDiGraph, query: str, max_chars: int = 
                 if not 1 < len(path) <= 6:
                     continue
 
+                # A path header is topology metadata, not evidence. Only emit it when
+                # the budget can also fit at least one source-backed claim for every
+                # hop, so a bare `[graph path]` line can never masquerade as citable
+                # evidence when the context window is nearly exhausted.
                 path_line = f"[graph path] {' -- '.join(map(str, path))}"
+                required_claims: list[tuple[tuple[str, str, str], str]] = []
+                path_is_supported = True
+                for left, right in zip(path, path[1:], strict=False):
+                    hop_claims = [
+                        (marker, claim_line)
+                        for marker, claim_line in _claims_between(graph, str(left), str(right))
+                        if marker not in seen
+                    ]
+                    if not hop_claims:
+                        path_is_supported = False
+                        break
+                    required_claims.append(hop_claims[0])
+
+                if not path_is_supported:
+                    continue
+
+                bundle_lines = [path_line, *(claim_line for _marker, claim_line in required_claims)]
+                bundle_extra = sum(len(line) for line in bundle_lines) + len(bundle_lines) - 1
+                if lines:
+                    bundle_extra += 1
+                if used_chars + bundle_extra > max_chars:
+                    continue
+
                 used_chars, _ = _append_complete_line(lines, path_line, used_chars, max_chars)
+                for marker, claim_line in required_claims:
+                    used_chars, appended = _append_complete_line(lines, claim_line, used_chars, max_chars)
+                    if appended:
+                        seen.add(marker)
+
+                # After the minimally supported path bundle is committed atomically,
+                # include additional parallel claims for its hops if budget remains.
                 for left, right in zip(path, path[1:], strict=False):
                     for marker, claim_line in _claims_between(graph, str(left), str(right)):
                         if marker in seen:
