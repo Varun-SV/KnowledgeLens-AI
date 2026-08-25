@@ -47,8 +47,17 @@ from knowledgelens.runtime import (
     request_configuration_error,
 )
 from knowledgelens.security import EndpointPolicyError, env_flag, resolve_endpoint, validate_endpoint
+from knowledgelens.upload_staging import (
+    StagedUpload,
+    materialize_staged_uploads,
+    next_upload_limit_mb,
+    remaining_upload_bytes,
+    stage_uploaded_file,
+    staged_upload_total,
+)
 
 APP_VERSION = "0.2.0"
+_MIB = 1024 * 1024
 
 
 def configured_endpoint(provider: str) -> str:
@@ -183,7 +192,7 @@ def generate_master_relations(
         payload = json.loads(response.strip().strip("`"))
     except json.JSONDecodeError:
         payload = {}
-    links = []
+    links: list[tuple[str, str]] = []
     for node in nodes:
         relation = payload.get(node, "relates to") if isinstance(payload, dict) else "relates to"
         links.append((node, " ".join(str(relation).split())[:80] or "relates to"))
@@ -252,7 +261,10 @@ def visualize_graph(graph: nx.MultiDiGraph, height: int = 760) -> None:
         if data.get("synthetic"):
             title += "\nSynthetic overview link — not used as grounded chat evidence."
         elif data.get("provenance_status") == "legacy-aggregated":
-            title += "\nLegacy aggregated relation — original source pairing/evidence was not preserved; excluded from grounded chat."
+            title += (
+                "\nLegacy aggregated relation — original source pairing/evidence was not preserved; "
+                "excluded from grounded chat."
+            )
 
         network.add_edge(
             subject,
@@ -311,10 +323,10 @@ def _state_upload_payload(uploaded_state) -> bytes | None:
         return None
     size = getattr(uploaded_state, "size", None)
     if isinstance(size, int) and not isinstance(size, bool) and size > MAX_STATE_BYTES:
-        raise ValueError(f"Graph state exceeds the {MAX_STATE_BYTES // (1024 * 1024)} MiB safety limit.")
+        raise ValueError(f"Graph state exceeds the {MAX_STATE_BYTES // _MIB} MiB safety limit.")
     payload = uploaded_state.getvalue()
     if len(payload) > MAX_STATE_BYTES:
-        raise ValueError(f"Graph state exceeds the {MAX_STATE_BYTES // (1024 * 1024)} MiB safety limit.")
+        raise ValueError(f"Graph state exceeds the {MAX_STATE_BYTES // _MIB} MiB safety limit.")
     return bytes(payload)
 
 
@@ -339,7 +351,8 @@ st.markdown(
 st.markdown('<div class="kl-kicker">Evidence graph workspace</div>', unsafe_allow_html=True)
 st.title("◉ KnowledgeLens AI")
 st.markdown(
-    "Turn documents and code into a **source-backed knowledge graph**—then inspect connections, trace evidence, and ask questions grounded in the graph."
+    "Turn documents and code into a **source-backed knowledge graph**—then inspect connections, "
+    "trace evidence, and ask questions grounded in the graph."
 )
 st.caption(f"v{APP_VERSION} · OpenAI-compatible endpoints · local or cloud")
 
@@ -357,6 +370,10 @@ if "graph_revision" not in st.session_state:
     st.session_state.graph_revision = 0
 if "loaded_state_fingerprint" not in st.session_state:
     st.session_state.loaded_state_fingerprint = None
+if "staged_sources" not in st.session_state:
+    st.session_state.staged_sources: list[StagedUpload] = []
+if "source_upload_revision" not in st.session_state:
+    st.session_state.source_upload_revision = 0
 
 with st.sidebar:
     st.header("Model connection")
@@ -379,7 +396,10 @@ with st.sidebar:
         type="password",
         key=f"api_key_{provider_key}",
         max_chars=MAX_API_KEY_CHARS,
-        help="Required for OpenAI; optional for local/configured endpoints. Credentials are isolated per provider and never written to graph exports.",
+        help=(
+            "Required for OpenAI; optional for local/configured endpoints. Credentials are isolated per provider "
+            "and never written to graph exports."
+        ),
     )
     default_model = "llama3.1" if provider != "OpenAI" else "gpt-4o-mini"
     model_name = st.text_input(
@@ -423,7 +443,7 @@ with st.sidebar:
         "Load graph state",
         type=["json"],
         key="state_loader",
-        max_upload_size=MAX_STATE_BYTES // (1024 * 1024),
+        max_upload_size=MAX_STATE_BYTES // _MIB,
     )
     try:
         state_payload = _state_upload_payload(uploaded_state)
@@ -466,23 +486,102 @@ with st.sidebar:
         st.rerun()
 
 supported_extensions = [
-    "pdf", "txt", "md", "markdown", "json", "xml", "html", "htm", "css", "js", "ts", "tsx", "jsx",
-    "py", "java", "c", "cpp", "h", "cs", "go", "rs", "php", "rb", "kt", "swift", "sh", "yaml", "yml",
-    "sql", "r", "m", "tex", "latex", "toml", "ini", "bat", "ps1",
+    "pdf",
+    "txt",
+    "md",
+    "markdown",
+    "json",
+    "xml",
+    "html",
+    "htm",
+    "css",
+    "js",
+    "ts",
+    "tsx",
+    "jsx",
+    "py",
+    "java",
+    "c",
+    "cpp",
+    "h",
+    "cs",
+    "go",
+    "rs",
+    "php",
+    "rb",
+    "kt",
+    "swift",
+    "sh",
+    "yaml",
+    "yml",
+    "sql",
+    "r",
+    "m",
+    "tex",
+    "latex",
+    "toml",
+    "ini",
+    "bat",
+    "ps1",
 ]
 
-uploaded_files = st.file_uploader(
-    "Add documents or source files",
-    type=supported_extensions,
-    accept_multiple_files=True,
-    max_upload_size=DEFAULT_INGESTION_LIMITS.max_upload_bytes // (1024 * 1024),
-    help="Text-based PDFs are supported. Scanned-image OCR is not included yet.",
+st.subheader("Stage source files")
+staged_sources: list[StagedUpload] = list(st.session_state.staged_sources)
+staged_bytes = staged_upload_total(staged_sources)
+remaining_bytes = remaining_upload_bytes(staged_sources, DEFAULT_INGESTION_LIMITS.max_upload_bytes)
+st.caption(
+    f"{len(staged_sources)}/{DEFAULT_INGESTION_LIMITS.max_files} files staged · "
+    f"{staged_bytes / _MIB:.2f}/{DEFAULT_INGESTION_LIMITS.max_upload_bytes / _MIB:g} MiB retained · "
+    f"{remaining_bytes / _MIB:.2f} MiB remaining"
 )
 
+if staged_sources:
+    for item in staged_sources:
+        st.write(f"• {item.name} · {item.size / _MIB:.2f} MiB")
+    if st.button("Clear staged sources"):
+        st.session_state.staged_sources = []
+        st.session_state.source_upload_revision += 1
+        st.rerun()
+
+next_upload_limit = next_upload_limit_mb(
+    staged_sources,
+    DEFAULT_INGESTION_LIMITS.max_upload_bytes,
+    DEFAULT_INGESTION_LIMITS.max_files,
+)
+if next_upload_limit is not None:
+    pending_source = st.file_uploader(
+        "Add one source file",
+        type=supported_extensions,
+        accept_multiple_files=False,
+        key=f"source_stager_{st.session_state.source_upload_revision}",
+        max_upload_size=next_upload_limit,
+        help=(
+            "Sources are staged one at a time. After each file is retained, this uploader is recreated with a "
+            "limit derived from the remaining 24 MiB aggregate build budget."
+        ),
+    )
+    if pending_source is not None:
+        try:
+            staged_sources = stage_uploaded_file(
+                staged_sources,
+                pending_source,
+                max_bytes=DEFAULT_INGESTION_LIMITS.max_upload_bytes,
+                max_files=DEFAULT_INGESTION_LIMITS.max_files,
+            )
+        except ValueError as exc:
+            st.error(str(exc))
+        else:
+            st.session_state.staged_sources = staged_sources
+            st.session_state.source_upload_revision += 1
+            st.rerun()
+else:
+    st.info("The source-file count or aggregate upload budget is full. Build the graph or clear staged sources.")
+
 if st.button("Build evidence graph", type="primary", use_container_width=True):
-    if not uploaded_files:
+    if not st.session_state.staged_sources:
         st.error("Add at least one document first.")
         st.stop()
+
     request_error = request_configuration_error(provider, api_key, model_name)
     if request_error:
         st.error(request_error)
@@ -501,6 +600,9 @@ if st.button("Build evidence graph", type="primary", use_container_width=True):
         st.error(str(exc))
         st.stop()
 
+    # Fresh independent streams are created only for a requested build; normal
+    # reruns retain only the bounded staged byte records, not another file copy.
+    uploaded_files = materialize_staged_uploads(st.session_state.staged_sources)
     with st.spinner("Reading and chunking sources…"):
         ingest_result = prepare_chunks(uploaded_files)
     chunks, ingest_warnings = ingest_result
@@ -645,7 +747,7 @@ if st.session_state.processing_complete or st.session_state.kg_graph.number_of_n
         use_container_width=True,
     )
 
-    readable_lines = []
+    readable_lines: list[str] = []
     for claim in export_data["claims"]:
         source = claim["source"]
         if claim.get("synthetic"):
@@ -705,4 +807,4 @@ if st.session_state.processing_complete or st.session_state.kg_graph.number_of_n
         with st.chat_message(message["role"]):
             st.write(message["content"])
 else:
-    st.info("Add files above to build your first evidence graph.")
+    st.info("Stage source files above to build your first evidence graph.")
