@@ -10,6 +10,13 @@ import networkx as nx
 from .graph import canonical_key
 
 STATE_SCHEMA_VERSION = 2
+_NODE_LINK_META = "_knowledgelens_node_link_fields"
+_NODE_LINK_FIELDS = {
+    "source": "__kl_from",
+    "target": "__kl_to",
+    "name": "__kl_id",
+    "key": "__kl_key",
+}
 
 
 def reconstruct_node_map(graph: nx.MultiDiGraph) -> dict[str, str]:
@@ -85,14 +92,36 @@ def _validate_graph_data_shape(graph_data: dict[str, Any], schema_version: int) 
         raise ValueError("KnowledgeLens graph state v2 must contain a directed MultiDiGraph.")
 
 
+def _node_link_kwargs(graph_data: dict[str, Any], edge_field: str) -> tuple[dict[str, Any], dict[str, str]]:
+    """Return sanitized node-link data and the field mapping needed to deserialize it."""
+    payload = dict(graph_data)
+    field_metadata = payload.pop(_NODE_LINK_META, None)
+    if field_metadata is None:
+        # Compatibility path for early v2 snapshots written before KnowledgeLens
+        # reserved its endpoint-field names. Such states may still fail the v2
+        # provenance validator if NetworkX's `source` endpoint key overwrote the
+        # claim's own provenance `source` attribute; failing closed is intentional.
+        return payload, {"edges": edge_field}
+
+    if field_metadata != _NODE_LINK_FIELDS:
+        raise ValueError("Graph state declares an unsupported node-link field mapping.")
+
+    return payload, {"edges": edge_field, **_NODE_LINK_FIELDS}
+
+
 def _node_link_graph(graph_data: dict[str, Any], schema_version: int) -> nx.Graph:
     _validate_graph_data_shape(graph_data, schema_version)
 
-    # Pin the field name for new state while accepting files written by NetworkX <=3.5.
+    # Pin the edge collection for new state while accepting the NetworkX <=3.5
+    # `links` collection. Endpoint/name/key fields are separately namespaced so
+    # claim attributes such as provenance `source` can never collide with node-link
+    # structural keys.
     if "edges" in graph_data:
-        return nx.node_link_graph(graph_data, edges="edges")
+        payload, kwargs = _node_link_kwargs(graph_data, "edges")
+        return nx.node_link_graph(payload, **kwargs)
     if "links" in graph_data:
-        return nx.node_link_graph(graph_data, edges="links")
+        payload, kwargs = _node_link_kwargs(graph_data, "links")
+        return nx.node_link_graph(payload, **kwargs)
     raise ValueError("Graph state is missing a supported edge collection ('edges' or legacy 'links').")
 
 
@@ -101,19 +130,27 @@ def _validate_node_ids(graph: nx.Graph) -> None:
         raise ValueError("Graph state node identifiers must be non-empty strings.")
 
 
+def _validate_master(graph: nx.Graph, master_concept: str | None) -> None:
+    master_nodes = [node for node, data in graph.nodes(data=True) if data.get("type") == "master"]
+    if graph.number_of_nodes() == 0:
+        if master_concept is not None or master_nodes:
+            raise ValueError("An empty graph state cannot declare a master concept.")
+        return
+
+    if not isinstance(master_concept, str) or not master_concept.strip():
+        raise ValueError("A non-empty graph state must declare a non-empty master_concept.")
+    if master_concept not in graph:
+        raise ValueError("Graph state master_concept does not exist in graph_data.")
+    if len(master_nodes) != 1 or master_nodes[0] != master_concept:
+        raise ValueError("Graph state must contain exactly one master node matching master_concept.")
+
+
 def _validate_v2_graph(graph: nx.Graph, master_concept: str | None) -> None:
     if not isinstance(graph, nx.MultiDiGraph):
         raise ValueError("KnowledgeLens graph state v2 must deserialize to a MultiDiGraph.")
 
     _validate_node_ids(graph)
-
-    if master_concept is not None:
-        if not isinstance(master_concept, str) or not master_concept.strip():
-            raise ValueError("Graph state master_concept must be a non-empty string or null.")
-        if master_concept not in graph:
-            raise ValueError("Graph state master_concept does not exist in graph_data.")
-        if graph.nodes[master_concept].get("type") != "master":
-            raise ValueError("Graph state master_concept node is not marked as type 'master'.")
+    _validate_master(graph, master_concept)
 
     for _subject, _obj, _key, data in graph.edges(keys=True, data=True):
         relation = data.get("relation")
@@ -160,16 +197,23 @@ def _validate_v2_graph(graph: nx.Graph, master_concept: str | None) -> None:
                 raise ValueError("Source-backed graph state v2 edges must contain a non-empty source.")
 
 
+def _serialized_graph_data(graph: nx.MultiDiGraph) -> dict[str, Any]:
+    graph_data = nx.node_link_data(graph, edges="edges", **_NODE_LINK_FIELDS)
+    graph_data[_NODE_LINK_META] = dict(_NODE_LINK_FIELDS)
+    return graph_data
+
+
 def serialize_graph_state(
     graph: nx.MultiDiGraph,
     master_concept: str | None,
     node_canonical_map: dict[str, str],
 ) -> str:
+    _validate_v2_graph(graph, master_concept)
     payload = {
         "schema_version": STATE_SCHEMA_VERSION,
         "master_concept": master_concept,
         "node_canonical_map": node_canonical_map,
-        "graph_data": nx.node_link_data(graph, edges="edges"),
+        "graph_data": _serialized_graph_data(graph),
     }
     return json.dumps(payload, ensure_ascii=False, indent=2)
 
