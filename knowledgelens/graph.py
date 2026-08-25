@@ -117,9 +117,9 @@ def get_or_create_node(
 def _claim_key(claim: Claim, subject: str, obj: str) -> str:
     """Build semantic/provenance identity after entity resolution.
 
-    Chunk index is intentionally not part of identity: forced overlap may present the
-    same exact source evidence to adjacent chunks. Page remains part of the key so an
-    identical excerpt repeated on distinct PDF pages keeps independent provenance.
+    Location is part of the normal identity so repeated evidence at distant source
+    positions remains independently traceable. Known forced-overlap duplicates are
+    handled separately at admission using explicit chunk-overlap provenance.
     """
     raw = "\x1f".join(
         [
@@ -128,6 +128,7 @@ def _claim_key(claim: Claim, subject: str, obj: str) -> str:
             _identity_text(obj),
             _identity_text(claim.source),
             str(claim.page),
+            str(claim.chunk_index),
             _identity_text(claim.evidence),
         ]
     )
@@ -149,6 +150,30 @@ def _claim_edge_data(claim: Claim) -> dict[str, Any] | None:
     if not claim.synthetic and not is_auditable_claim_data(data):
         return None
     return data
+
+
+def _is_forced_overlap_duplicate(
+    graph: nx.MultiDiGraph,
+    subject: str,
+    obj: str,
+    claim: Claim,
+) -> bool:
+    """Collapse only exact claims copied into a chunk by a known forced overlap."""
+    if not claim.overlap_from_previous or claim.chunk_index <= 0:
+        return False
+
+    previous_chunk = claim.chunk_index - 1
+    for data in graph.get_edge_data(subject, obj, default={}).values():
+        if data.get("chunk_index") != previous_chunk or data.get("page") != claim.page:
+            continue
+        if _identity_text(str(data.get("source") or "")) != _identity_text(claim.source):
+            continue
+        if _identity_text(str(data.get("relation") or "")) != _identity_text(claim.relation):
+            continue
+        if _identity_text(str(data.get("evidence") or "")) != _identity_text(claim.evidence):
+            continue
+        return True
+    return False
 
 
 def _capacity_error(graph: nx.MultiDiGraph, new_nodes: int, new_edges: int) -> GraphCapacityError | None:
@@ -183,6 +208,10 @@ def add_claims(
         object_canonical, object_display = object_normalized
         subject = node_map.get(subject_canonical, subject_display)
         obj = node_map.get(object_canonical, object_display)
+
+        if _is_forced_overlap_duplicate(graph, subject, obj, claim):
+            continue
+
         key = _claim_key(claim, subject, obj)
         if graph.has_edge(subject, obj, key=key):
             continue
