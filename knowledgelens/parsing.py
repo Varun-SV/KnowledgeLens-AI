@@ -123,7 +123,7 @@ def parse_master_concept_response(text: str) -> str:
 
 
 def _coerce_confidence(value: Any) -> float | None:
-    if value in (None, ""):
+    if value in (None, "") or isinstance(value, bool):
         return None
     try:
         numeric = float(value)
@@ -138,7 +138,17 @@ def _coerce_confidence(value: Any) -> float | None:
     return None
 
 
-def _claim_from_mapping(item: dict[str, Any], chunk: DocumentChunk) -> Claim | None:
+def _evidence_match_text(value: str) -> str:
+    """Normalize only Unicode/case/whitespace for conservative verbatim matching."""
+    normalized = unicodedata.normalize("NFKC", value).casefold()
+    return " ".join(normalized.split())
+
+
+def _claim_from_mapping(
+    item: dict[str, Any],
+    chunk: DocumentChunk,
+    normalized_source_text: str,
+) -> Claim | None:
     subject = item.get("subject") or item.get("s")
     relation = item.get("relation") or item.get("relationship") or item.get("predicate") or item.get("r")
     obj = item.get("object") or item.get("o")
@@ -150,10 +160,11 @@ def _claim_from_mapping(item: dict[str, Any], chunk: DocumentChunk) -> Claim | N
         return None
 
     evidence = " ".join(str(item.get("evidence") or item.get("quote") or "").split())
-    if not evidence:
+    if not evidence or len(evidence) > 500:
         return None
-    if len(evidence) > 500:
-        evidence = evidence[:497] + "..."
+    normalized_evidence = _evidence_match_text(evidence)
+    if not normalized_evidence or normalized_evidence not in normalized_source_text:
+        return None
 
     return Claim(
         subject=ns[1],
@@ -181,9 +192,10 @@ def _iter_json_items(payload: Any) -> Iterable[dict[str, Any]]:
 
 
 def parse_claims(text: str, chunk: DocumentChunk) -> list[Claim]:
-    """Parse structured JSON first, then fall back to the legacy pipe format only if JSON decoding fails."""
+    """Parse claims and accept only source-verifiable verbatim evidence."""
     cleaned = _strip_markdown_fence(text)
     claims: list[Claim] = []
+    normalized_source_text = _evidence_match_text(chunk.text)
 
     try:
         payload = json.loads(cleaned)
@@ -191,7 +203,7 @@ def parse_claims(text: str, chunk: DocumentChunk) -> list[Claim]:
         payload = None
     else:
         for item in _iter_json_items(payload):
-            claim = _claim_from_mapping(item, chunk)
+            claim = _claim_from_mapping(item, chunk, normalized_source_text)
             if claim:
                 claims.append(claim)
         return claims
@@ -215,6 +227,7 @@ def parse_claims(text: str, chunk: DocumentChunk) -> list[Claim]:
                 "confidence": confidence,
             },
             chunk,
+            normalized_source_text,
         )
         if claim:
             claims.append(claim)
