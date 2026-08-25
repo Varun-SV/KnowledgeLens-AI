@@ -8,6 +8,7 @@ from urllib3.util import Timeout
 
 from .security import IPAddress, ValidatedEndpoint
 
+_MAX_REQUEST_BYTES = 96 * 1024
 _MAX_RESPONSE_BYTES = 5 * 1024 * 1024
 
 
@@ -39,13 +40,16 @@ def post_json_pinned(
     payload: dict[str, Any],
     headers: dict[str, str] | None = None,
 ) -> tuple[int, bytes]:
-    """POST JSON to one of the exact IP addresses that passed endpoint validation.
+    """POST bounded JSON to one of the exact IP addresses that passed endpoint validation.
 
     The TCP connection is made to a validated IP literal, while the original hostname
     is retained in Host and, for HTTPS, SNI/certificate verification. This prevents a
     second DNS lookup from changing the destination after policy validation.
     """
     body = json.dumps(payload, ensure_ascii=False).encode("utf-8")
+    if len(body) > _MAX_REQUEST_BYTES:
+        raise PinnedRequestError("The LLM request exceeded the 96 KiB safety limit.")
+
     request_headers = dict(headers or {})
     request_headers.setdefault("Content-Type", "application/json")
     request_headers["Host"] = endpoint.host_header
