@@ -77,34 +77,44 @@ def test_upload_byte_budget_rejects_before_any_extraction(monkeypatch):
 
     monkeypatch.setattr(ingestion, "_extract_sections_with_warnings", must_not_extract)
     limits = IngestionLimits(max_files=2, max_upload_bytes=8, max_extracted_chars=100, max_chunks=10)
-    chunks, warnings = prepare_chunks([UploadedBytes("large.txt", b"x" * 9)], limits=limits)
+    result = prepare_chunks([UploadedBytes("large.txt", b"x" * 9)], limits=limits)
+    chunks, warnings = result
 
     assert chunks == []
-    assert "combined uploads" in warnings[-1]
+    assert warnings == []
+    assert result.fatal_error is not None
+    assert "combined uploads" in result.fatal_error
 
 
 def test_extracted_text_and_chunk_budgets_fail_closed():
     text_file = UploadedBytes("large.txt", b"A" * 40)
     char_limits = IngestionLimits(max_files=2, max_upload_bytes=100, max_extracted_chars=20, max_chunks=10)
-    chunks, warnings = prepare_chunks([text_file], limits=char_limits)
+    result = prepare_chunks([text_file], limits=char_limits)
+    chunks, _warnings = result
     assert chunks == []
-    assert "extracted text" in warnings[-1]
+    assert result.fatal_error is not None
+    assert "extracted text" in result.fatal_error
 
     text_file = UploadedBytes("many.txt", b"A" * 7000)
     chunk_limits = IngestionLimits(max_files=2, max_upload_bytes=10_000, max_extracted_chars=10_000, max_chunks=1)
-    chunks, warnings = prepare_chunks([text_file], limits=chunk_limits)
+    result = prepare_chunks([text_file], limits=chunk_limits)
+    chunks, _warnings = result
     assert chunks == []
-    assert "model requests" in warnings[-1]
+    assert result.fatal_error is not None
+    assert "model requests" in result.fatal_error
 
 
 def test_file_count_budget_fails_closed():
     limits = IngestionLimits(max_files=1, max_upload_bytes=100, max_extracted_chars=100, max_chunks=10)
-    chunks, warnings = prepare_chunks(
+    result = prepare_chunks(
         [UploadedBytes("a.txt", b"a"), UploadedBytes("b.txt", b"b")],
         limits=limits,
     )
+    chunks, warnings = result
     assert chunks == []
-    assert "at most 1 files" in warnings[-1]
+    assert warnings == []
+    assert result.fatal_error is not None
+    assert "at most 1 files" in result.fatal_error
 
 
 def test_partial_pdf_extraction_surfaces_missing_and_failed_pages(monkeypatch):
@@ -122,26 +132,32 @@ def test_partial_pdf_extraction_surfaces_missing_and_failed_pages(monkeypatch):
         pages = [FakePage("Alpha supports Beta"), FakePage(""), FakePage(fail=True)]
 
     monkeypatch.setattr(ingestion, "PdfReader", lambda _stream: FakeReader())
-    chunks, warnings = prepare_chunks([UploadedBytes("mixed.pdf", b"fake-pdf")])
+    result = prepare_chunks([UploadedBytes("mixed.pdf", b"fake-pdf")])
+    chunks, warnings = result
 
+    assert result.fatal_error is None
     assert [chunk.page for chunk in chunks] == [1]
     assert any("page(s) 2 had no extractable text" in warning for warning in warnings)
     assert any("failed on page(s) 3" in warning for warning in warnings)
 
 
 def test_unique_filename_keeps_readable_source_name():
-    chunks, warnings = prepare_chunks([UploadedBytes("notes.md", b"Alpha connects to Beta")])
+    result = prepare_chunks([UploadedBytes("notes.md", b"Alpha connects to Beta")])
+    chunks, warnings = result
+    assert result.fatal_error is None
     assert warnings == []
     assert chunks[0].source == "notes.md"
 
 
 def test_duplicate_filenames_get_stable_content_disambiguators():
-    chunks, warnings = prepare_chunks(
+    result = prepare_chunks(
         [
             UploadedBytes("config.yaml", b"service: alpha"),
             UploadedBytes("config.yaml", b"service: beta"),
         ]
     )
+    chunks, warnings = result
+    assert result.fatal_error is None
     assert warnings == []
     sources = {chunk.source for chunk in chunks}
     assert len(sources) == 2
@@ -149,12 +165,14 @@ def test_duplicate_filenames_get_stable_content_disambiguators():
 
 
 def test_identical_duplicate_filenames_still_get_unique_source_labels():
-    chunks, warnings = prepare_chunks(
+    result = prepare_chunks(
         [
             UploadedBytes("report.txt", b"same content"),
             UploadedBytes("report.txt", b"same content"),
         ]
     )
+    chunks, warnings = result
+    assert result.fatal_error is None
     assert warnings == []
     sources = [chunk.source for chunk in chunks]
     assert len(set(sources)) == 2
