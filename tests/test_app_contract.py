@@ -85,11 +85,17 @@ def test_api_key_limit_is_wired_into_password_widget_and_shared_preflight():
 def test_graph_capacity_failure_stops_build_before_session_commit():
     app_source = Path("KnowledgeLens_AI.py").read_text(encoding="utf-8")
 
-    capacity_handler = app_source.index("except GraphCapacityError as exc:")
-    generic_handler = app_source.index("except Exception as exc:", capacity_handler)
-    session_commit = app_source.index("st.session_state.kg_graph = graph", capacity_handler)
-    assert capacity_handler < generic_handler < session_commit
-    assert "st.stop()" in app_source[capacity_handler:generic_handler]
+    loop_start = app_source.index("for index, chunk in enumerate(chunks, start=1):")
+    loop_end = app_source.index("if graph.number_of_nodes() > 1:", loop_start)
+    loop = app_source[loop_start:loop_end]
+    request_handler = loop.index("except Exception as exc:")
+    capacity_handler = loop.index("except GraphCapacityError as exc:")
+    session_commit = app_source.index("st.session_state.kg_graph = graph", loop_end)
+
+    assert request_handler < capacity_handler
+    assert capacity_handler < session_commit
+    capacity_end = loop.index("progress.progress(index / len(chunks))", capacity_handler)
+    assert "st.stop()" in loop[capacity_handler:capacity_end]
 
 
 def test_state_export_failure_is_rendered_instead_of_crashing_page():
