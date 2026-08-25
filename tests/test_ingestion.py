@@ -27,6 +27,29 @@ def test_safe_block_boundaries_do_not_repeat_overlap_text():
     assert first[-20:] not in chunks[1]
 
 
+def test_safe_sentence_boundary_in_oversized_block_does_not_repeat_completed_sentence():
+    completed = "Claim Alpha supports Beta."
+    source = (
+        "Introductory words fill the oversized paragraph. "
+        f"{completed} "
+        "Gamma continues with enough additional text to require another chunk and preserve the remaining content."
+    )
+    chunks = chunk_section(source, max_chars=82, overlap=30)
+
+    assert len(chunks) >= 2
+    assert sum(completed in chunk for chunk in chunks) == 1
+    assert chunks[0].endswith(".")
+    assert not chunks[1].startswith(chunks[0][-30:])
+
+
+def test_mid_content_oversized_split_retains_overlap():
+    source = "A" * 150
+    chunks = chunk_section(source, max_chars=80, overlap=20)
+
+    assert len(chunks) >= 2
+    assert chunks[0][-20:] == chunks[1][:20]
+
+
 def test_unique_filename_keeps_readable_source_name():
     chunks, warnings = prepare_chunks([UploadedBytes("notes.md", b"Alpha connects to Beta")])
     assert warnings == []
