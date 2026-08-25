@@ -1,0 +1,27 @@
+name: Feature request
+description: Propose an improvement to the KnowledgeLens workflow
+title: "[Feature]: "
+labels: [enhancement]
+body:
+  - type: textarea
+    id: problem
+    attributes:
+      label: What problem should KnowledgeLens solve?
+    validations:
+      required: true
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Proposed experience
+      description: Describe the workflow rather than only the implementation.
+    validations:
+      required: true
+  - type: textarea
+    id: provenance
+    attributes:
+      label: Provenance / trust considerations
+      description: If this feature extracts, merges, summarizes, or infers knowledge, how should users inspect its source?
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternatives considered

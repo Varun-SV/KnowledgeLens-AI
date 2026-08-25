@@ -1,94 +1,133 @@
-# KnowledgeLens AI: Extract & Visualize Insights from Any Document 🧠
+# ◉ KnowledgeLens AI
 
-[![License](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
-[![Python Version](https://img.shields.io/badge/Python-3.8%2B-blue)](https://www.python.org/)
-[![Streamlit App](https://static.streamlit.io/badges/streamlit_badge_black_white.svg)](https://knowledgelens.streamlit.app/) <!-- TODO: Replace with your actual live demo link if you host it! -->
+**Make knowledge inspectable.** KnowledgeLens AI turns documents and source code into a source-backed knowledge graph, then lets you explore relationships, trace evidence, ask graph-grounded questions, and export the result.
 
-Turn your unstructured documents (PDFs, text files, code, XML) into powerful, interactive knowledge graphs using the magic of Large Language Models (LLMs)! KnowledgeLens AI helps you understand complex information, discover hidden connections, and chat with your data.
+[Open the Streamlit app](https://knowledgelens.streamlit.app/) · [Project website](https://varun-sv.github.io/KnowledgeLens-AI/) · [MIT License](LICENSE)
 
-## ✨ Features
+## Why KnowledgeLens?
 
-*   **📄 Versatile Document Ingestion:** Upload PDFs, Markdown, TXT, code files (.py, .js, .java, etc.), JSON, XML, and more.
-*   **💡 LLM-Powered Extraction:** Leverages OpenAI-compatible LLMs (Ollama, Llama.cpp, OpenAI API) to automatically identify and extract entities, concepts, and relationships.
-*   **🗺️ Interactive Knowledge Graph:** Visualize your data as a dynamic, zoomable, and draggable graph powered by `pyvis` and `networkx`.
-*   **🎯 Master Concept Detection:** Automatically detects the central theme of your uploaded documents or lets you set it manually.
-*   **💬 Graph-Augmented Chat (RAG):** Ask questions about your graph, and get answers grounded *only* in the extracted relationships and entities.
-*   **💾 Persistence:** Save and load your graph state to pick up where you left off without reprocessing.
-*   **📤 Export Options:** Export your graph data in JSON or human-readable text formats.
+Traditional document chat hides most of the retrieval process. KnowledgeLens keeps an explicit graph in the middle:
 
-## 🚀 Getting Started
+```text
+Documents → source-aware chunks → structured claims → evidence graph → graph retrieval → LLM answer
+```
 
-These instructions will get you a copy of the project up and running on your local machine.
+Each extracted claim can preserve its own **source, page/chunk, evidence, and confidence**, so two relationships between the same entities do not have to collapse into one anonymous edge.
 
-### Prerequisites
+## Current capabilities
 
-*   Python 3.8+
-*   Access to an OpenAI-compatible LLM endpoint (e.g., [Ollama](https://ollama.com/), [Llama.cpp](https://github.com/ggerganov/llama.cpp), or the OpenAI API).
+- **Document + code ingestion:** text-based PDF, TXT, Markdown, JSON, XML, HTML, CSS, JavaScript/TypeScript, Python, Java, C/C++, C#, Go, Rust, PHP, Ruby, Kotlin, Swift, shell, YAML, SQL, R, TeX and other text-like formats.
+- **Provider-neutral LLM connection:** built-in Ollama, llama.cpp, and OpenAI presets plus an operator-configured OpenAI-compatible endpoint.
+- **Auditable extraction:** structured claim parsing with a compatibility fallback for legacy `SUBJECT | RELATION | OBJECT | VERBATIM_EVIDENCE [| CONFIDENCE]` output. The evidence field is required and must occur in the supplied source chunk.
+- **Per-claim provenance:** the graph uses a `MultiDiGraph`, so each source-backed relationship remains independently inspectable.
+- **Interactive graph:** drag, pan, zoom and hover relationships to inspect provenance.
+- **Graph-aware retrieval:** boundary-aware entity matching, local claim neighborhoods, and short mixed-direction graph paths are surfaced before chat generation.
+- **Grounded chat:** the answer prompt is restricted to retrieved graph context and asks for source/location citations.
+- **Portable state:** save/reload graph state, export evidence graph JSON, or export a human-readable claim ledger.
+- **Legacy state migration:** v1 graph exports are upgraded without inventing relation↔source pairings that the old schema never stored.
 
-### Installation
+> **Not supported yet:** OCR for scanned/image-only PDFs, DOCX/PPTX native parsing, embeddings/vector retrieval, collaborative multi-user persistence, and production authentication. The website intentionally does not claim these features.
 
-1.  **Clone the repository:**
-    ```bash
-    git clone https://github.com/Varun-SV/KnowledgeLens-AI.git
-    cd KnowledgeLens-AI
-    ```
+## Run locally
 
-2.  **Create a virtual environment (recommended):**
-    ```bash
-    python -m venv venv
-    ./venv/Scripts/activate # On Windows
-    # source venv/bin/activate # On macOS/Linux
-    ```
+KnowledgeLens uses a secure-by-default endpoint policy. Public visitors cannot type an arbitrary server-side request target into the UI. The endpoint selector resolves only to built-in provider URLs or an endpoint configured by the person operating the KnowledgeLens server.
 
-3.  **Install the required Python packages:**
-    ```bash
-    pip install -r requirements.txt
-    ```
-    
-### Running the Application
+```bash
+git clone https://github.com/Varun-SV/KnowledgeLens-AI.git
+cd KnowledgeLens-AI
+python -m venv .venv
+```
 
-1.  **Start your LLM endpoint:**
-    *   If using Ollama, ensure it's running and you've pulled a model (e.g., `ollama run llama3.1`).
-    *   If using `llama.cpp`, ensure your server is running.
+Activate the virtual environment, then install dependencies:
 
-2.  **Run the Streamlit application:**
-    ```bash
-    streamlit run KnowledgeLens_AI.py
-    ```
+```bash
+pip install -r requirements.txt
+```
 
-    The application will open in your default web browser (usually `http://localhost:8501`).
+For a **trusted local** Ollama or llama.cpp deployment:
 
-### Configuration
+```bash
+# macOS / Linux
+export KNOWLEDGELENS_ALLOW_LOCAL_ENDPOINTS=1
 
-Once the app is running:
+# PowerShell
+$env:KNOWLEDGELENS_ALLOW_LOCAL_ENDPOINTS="1"
+```
 
-1.  **LLM Configuration (Sidebar):**
-    *   **Base URL:** Enter the URL of your LLM endpoint (e.g., `http://localhost:11434` for Ollama, `http://localhost:8080` for Llama.cpp, or `https://api.openai.com/v1` for OpenAI).
-    *   **API Key (Optional):** Provide your API key if your endpoint requires authentication (e.g., OpenAI).
-    *   **Model:** Specify the model name (e.g., `llama3.1`, `gpt-4o`).
-    *   **Temperature:** Adjust for creativity vs. consistency (0.0 for factual, 1.0 for creative).
+Then start the app:
 
-2.  **Graph Settings (Sidebar):**
-    *   **Auto-detect master concept:** Let the AI find the main topic.
-    *   **Manual master concept:** Set the main topic yourself.
-    *   **Master connections (%):** Control how many top entities connect to the master node.
-    *   **Custom Extraction Focus:** Provide specific instructions to the AI on what kind of relationships to prioritize during extraction.
+```bash
+streamlit run KnowledgeLens_AI.py
+```
 
-## 🤝 Contributing
+Built-in endpoints:
 
-Contributions are what make the open-source community such an amazing place to learn, inspire, and create. Any contributions you make are **greatly appreciated**.
+| Provider | Base URL |
+| --- | --- |
+| Ollama | `http://localhost:11434` |
+| llama.cpp server | `http://localhost:8080` |
+| OpenAI | `https://api.openai.com` |
 
-1.  Fork the Project
-2.  Create your Feature Branch (`git checkout -b feature/AmazingFeature`)
-3.  Commit your Changes (`git commit -m 'Add some AmazingFeature'`)
-4.  Push to the Branch (`git push origin feature/AmazingFeature`)
-5.  Open a Pull Request
+KnowledgeLens appends `/v1/chat/completions` itself.
 
-## 📄 License
+### Custom OpenAI-compatible endpoint
 
-Distributed under the MIT License. See `LICENSE` for more information.
+Custom endpoints are configured by the server operator, not supplied by arbitrary visitors:
 
-## ✉️ Contact
+```bash
+export KNOWLEDGELENS_CUSTOM_ENDPOINT="https://llm.example.com"
+```
 
-Your Name - [varunsv077@gmail.com](mailto:varunsv077@gmail.com)
-Project Link: [https://github.com/Varun-SV/KnowledgeLens-AI](https://github.com/Varun-SV/KnowledgeLens-AI) <!-- TODO: Replace with your actual GitHub repo link -->
+For a private-network endpoint, also explicitly opt in:
+
+```bash
+export KNOWLEDGELENS_ALLOW_PRIVATE_ENDPOINTS=1
+```
+
+Plain HTTP is accepted only when **every resolved address is an explicitly allowed local/private destination**. A local/private opt-in never makes public `http://` endpoints acceptable. Redirects are rejected so credentials cannot silently follow a redirect to another host.
+
+## Development
+
+```bash
+pip install -e ".[dev]"
+python -m pytest
+ruff check .
+python -m compileall KnowledgeLens_AI.py knowledgelens
+```
+
+The core code is split into focused modules:
+
+```text
+knowledgelens/
+├── graph.py         # MultiDiGraph + provenance-preserving claims
+├── ingestion.py     # bounded file extraction + line-preserving chunking
+├── models.py        # DocumentChunk / Claim
+├── parsing.py       # structured output + compatibility parser
+├── persistence.py   # bounded state schema + legacy migration
+├── presentation.py  # safe visualization text helpers
+├── retrieval.py     # entity scoring, neighborhoods, mixed-direction paths
+└── security.py      # endpoint network policy
+```
+
+The Streamlit UI/orchestration remains in `KnowledgeLens_AI.py`.
+
+## Website
+
+The static landing page lives in `site/` and is intentionally framework-free: HTML, CSS, SVG, and vanilla JavaScript. GitHub Actions publishes it to GitHub Pages after changes land on `main`.
+
+Its signature interaction is the **provenance lens**: moving the lens over the hero graph reveals relationship labels and the source/evidence behind the nearest claim.
+
+## Automation
+
+- **CI:** supported Python matrix, Ruff, pytest and compile checks.
+- **CodeQL:** Python security analysis on pull requests, `main`, and a weekly schedule.
+- **Pages:** static `site/` deployment to GitHub Pages.
+- **Dependabot:** weekly Python and GitHub Actions dependency updates.
+
+## Contributing
+
+Contributions are welcome. Please read [CONTRIBUTING.md](CONTRIBUTING.md). Security issues should follow [SECURITY.md](SECURITY.md) rather than being filed publicly.
+
+## License
+
+MIT © Varun S V. See [LICENSE](LICENSE).

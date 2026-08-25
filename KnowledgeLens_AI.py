@@ -1,77 +1,78 @@
-import io
+from __future__ import annotations
+
+import hashlib
 import json
+import os
 import tempfile
-from typing import List, Tuple, Optional, Dict, Any
+from collections import defaultdict
+from pathlib import Path
 
 import networkx as nx
-import requests
 import streamlit as st
 import streamlit.components.v1 as components
-from pypdf import PdfReader
 from pyvis.network import Network
 
+from knowledgelens.graph import (
+    GraphCapacityError,
+    add_claims,
+    add_master_links,
+    create_graph,
+    graph_to_export,
+    top_entities,
+)
+from knowledgelens.http_client import PinnedRequestError, post_json_pinned
+from knowledgelens.ingestion import DEFAULT_INGESTION_LIMITS, prepare_chunks
+from knowledgelens.limits import (
+    MAX_API_KEY_CHARS,
+    MAX_CHAT_QUERY_CHARS,
+    MAX_ENTITY_LABEL_CHARS,
+    MAX_EXTRACTION_FOCUS_CHARS,
+    MAX_MODEL_NAME_CHARS,
+)
+from knowledgelens.models import DocumentChunk
+from knowledgelens.parsing import parse_claims, parse_master_concept_response
+from knowledgelens.persistence import MAX_STATE_BYTES, deserialize_graph_state, serialize_graph_state
+from knowledgelens.presentation import parallel_edge_smooth, safe_tooltip_text, visualization_limit_error
+from knowledgelens.resilience import RequestFailureCircuit
+from knowledgelens.retrieval import retrieve_graph_context
+from knowledgelens.runtime import (
+    chat_query_error,
+    extraction_focus_error,
+    extraction_messages,
+    grounded_chat_messages,
+    manual_master_concept_error,
+    master_detection_messages,
+    no_claims_build_error,
+    provider_state_key,
+    request_configuration_error,
+)
+from knowledgelens.security import EndpointPolicyError, env_flag, resolve_endpoint, validate_endpoint
+from knowledgelens.upload_staging import (
+    StagedUpload,
+    materialize_staged_uploads,
+    next_upload_limit_mb,
+    remaining_upload_bytes,
+    stage_uploaded_file,
+    staged_upload_total,
+)
 
-# ---------------------------------------------------------
-# Utility functions
-# ---------------------------------------------------------
+APP_VERSION = "0.2.0"
+_MIB = 1024 * 1024
 
 
-def extract_text_from_file(uploaded_file) -> str:
-    """
-    Extract text from uploaded file.
-    Supports PDF via pypdf, and text/code/xml via simple decoding.
-    """
-    try:
-        file_name = uploaded_file.name.lower()
-        uploaded_file.seek(0)
-        
-        if file_name.endswith(".pdf"):
-            reader = PdfReader(uploaded_file)
-            pages_text = []
-            for page in reader.pages:
-                try:
-                    text = page.extract_text() or ""
-                except Exception:
-                    text = ""
-                pages_text.append(text)
-            return "\n".join(pages_text)
-            
-        else:
-            # Attempt to read as text (UTF-8 or Latin-1)
-            content = uploaded_file.read()
-            try:
-                return content.decode("utf-8")
-            except UnicodeDecodeError:
-                # Fallback for older encodings
-                return content.decode("latin-1")
-                
-    except Exception as e:
-        # In a real app, you might log this
-        return ""
+def configured_endpoint(provider: str) -> str:
+    """Resolve a user-selected provider to an operator-controlled endpoint."""
+    if provider == "Ollama / local":
+        return "http://localhost:11434"
+    if provider == "llama.cpp / local":
+        return "http://localhost:8080"
+    if provider == "OpenAI":
+        return "https://api.openai.com"
 
-
-def chunk_text(text: str, max_chars: int = 2500) -> List[str]:
-    """Smart chunking that tries to preserve semantic boundaries."""
-    text = text.replace("\r", " ")
-    
-    # Split by paragraphs first
-    paragraphs = [p.strip() for p in text.split("\n\n") if p.strip()]
-    
-    chunks = []
-    current_chunk = ""
-    
-    for para in paragraphs:
-        if len(current_chunk) + len(para) < max_chars:
-            current_chunk += para + "\n\n"
-        else:
-            if current_chunk:
-                chunks.append(current_chunk.strip())
-            current_chunk = para + "\n\n"
-    
-    if current_chunk:
-        chunks.append(current_chunk.strip())
-    
-    return chunks if chunks else [text[:max_chars]]
+    configured = os.getenv("KNOWLEDGELENS_CUSTOM_ENDPOINT", "").strip()
+    if provider == "Configured endpoint" and configured:
+        return configured
+    raise EndpointPolicyError("No endpoint is configured for this provider.")
 
 
 def call_llm_api(
@@ -82,12 +83,8 @@ def call_llm_api(
     user_prompt: str,
     temperature: float = 0.1,
 ) -> str:
-    """Call an OpenAI-compatible /v1/chat/completions endpoint (Ollama, Llama.cpp, etc)."""
-    url = base_url.rstrip("/") + "/v1/chat/completions"
-    
-    headers = {
-        "Content-Type": "application/json"
-    }
+    endpoint = resolve_endpoint(base_url)
+    headers = {"Content-Type": "application/json"}
     if api_key:
         headers["Authorization"] = f"Bearer {api_key}"
 
@@ -100,897 +97,714 @@ def call_llm_api(
             {"role": "user", "content": user_prompt},
         ],
     }
+    try:
+        status_code, response_body = post_json_pinned(endpoint, payload, headers)
+    except PinnedRequestError as exc:
+        raise RuntimeError(f"Could not reach the LLM endpoint: {exc}") from exc
+
+    if 300 <= status_code < 400:
+        raise RuntimeError("The LLM endpoint returned a redirect. Redirects are blocked for credential safety.")
+    if status_code >= 400:
+        detail = response_body.decode("utf-8", errors="replace")[:400]
+        raise RuntimeError(f"LLM returned HTTP {status_code}: {detail}")
 
     try:
-        resp = requests.post(url, headers=headers, json=payload, timeout=180)
-        resp.raise_for_status()
-    except Exception as e:
-        raise RuntimeError(f"Error calling LLM: {e}") from e
-
-    data = resp.json()
-
-    try:
-        return data["choices"][0]["message"]["content"]
-    except Exception:
-        raise RuntimeError(f"Unexpected LLM response format: {data}")
+        response_payload = json.loads(response_body)
+        return str(response_payload["choices"][0]["message"]["content"])
+    except (ValueError, KeyError, IndexError, TypeError) as exc:
+        raise RuntimeError("The endpoint returned an unexpected OpenAI-compatible response.") from exc
 
 
-def extract_master_concept(
-    base_url: str, 
-    api_key: str, 
-    model: str, 
-    all_texts: List[Tuple[str, str]], 
-    temperature: float = 0.1
-) -> str:
-    """Ask LLM to identify the core concept from ALL documents."""
-    
-    # Combine first 1500 chars from each document for master concept detection
-    combined_preview = ""
-    for doc_name, text in all_texts:
-        preview = text[:1500].strip()
-        combined_preview += f"\n\n--- Document: {doc_name} ---\n{preview}"
-    
-    # Limit total context
-    combined_preview = combined_preview[:6000]
-    
-    system_prompt = (
-        "You are an expert at analyzing documents and identifying their core theme. "
-        "Respond with ONLY a short phrase (2-4 words) that captures the main topic. "
-        "Examples: 'Machine Learning', 'Climate Science', 'Project Management', 'Neural Networks'. "
-        "Do not include articles (a, an, the) or extra words."
-    )
-    
-    user_prompt = (
-        f"Analyze these document excerpts and identify the ONE main topic that unifies them:\n"
-        f"{combined_preview}\n\n"
-        f"What is the central concept? Respond with ONLY 2-4 words:"
-    )
-    
-    try:
-        response = call_llm_api(base_url, api_key, model, system_prompt, user_prompt, temperature)
-        
-        # Aggressive cleaning
-        concept = response.strip()
-        concept = concept.strip('"').strip("'").strip('`').strip()
-        concept = concept.split("\n")[0].strip()
-        for prefix in ["The central concept is", "Main topic:", "Topic:", "Central concept:", "Answer:"]:
-            if concept.startswith(prefix):
-                concept = concept[len(prefix):].strip()
-        
-        for article in [" the ", " a ", " an "]:
-            concept = concept.replace(article, " ")
-        concept = " ".join(concept.split())
-        
-        if len(concept) > 50 or len(concept) < 2:
-            first_text = all_texts[0][1]
-            words = first_text.split()[:5]
-            concept = " ".join(words)
-        
-        concept = concept.strip().title()
-        
-        return concept if concept else "Knowledge Base"
-        
-    except Exception as e:
-        st.warning(f"Could not detect master concept: {e}. Using fallback.")
-        if all_texts:
-            first_text = all_texts[0][1]
-            words = [w for w in first_text.split()[:8] if len(w) > 3]
-            return " ".join(words[:3]).title() if words else "Knowledge Base"
-        return "Knowledge Base"
-
-
-def normalize_entity(raw: str) -> Optional[Tuple[str, str]]:
-    """Normalize an entity label for de-dup and filtering."""
-    if raw is None:
-        return None
-
-    txt = str(raw).strip()
-    if not txt:
-        return None
-
-    display = " ".join(txt.split())
-
-    if len(display) < 2:
-        return None
-
-    stopwords = {"the", "a", "an", "and", "or", "but", "in", "on", "at", "to", "for"}
-    if display.lower() in stopwords:
-        return None
-
-    canonical = display.lower()
-    return canonical, display
-
-
-def parse_triples_with_direction(text: str) -> List[Tuple[str, str, str]]:
-    """Parse directed triples from LLM output."""
-    triples: List[Tuple[str, str, str]] = []
-    
-    lines = text.split("\n")
-    
-    for line in lines:
-        line = line.strip()
-        if not line:
-            continue
-        
-        line = line.lstrip("0123456789.-•*# ").strip()
-        
-        if "|" not in line:
-            continue
-        
-        parts = [p.strip() for p in line.split("|")]
-        
-        if len(parts) != 3:
-            continue
-        
-        s, r, o = parts
-        
-        norm_s = normalize_entity(s)
-        norm_o = normalize_entity(o)
-        norm_r = normalize_entity(r)
-
-        if not (norm_s and norm_r and norm_o):
-            continue
-
-        triples.append((norm_s[1], norm_r[1], norm_o[1]))
-    
-    return triples
-
-
-def get_or_create_node(G: nx.DiGraph, label: str, node_type: str = "entity") -> Optional[str]:
-    """Return a stable node name for a label, creating it if needed."""
-    norm = normalize_entity(label)
-    if not norm:
-        return None
-
-    canonical, display = norm
-    node_map = st.session_state.get("node_canonical_map", {})
-
-    if canonical in node_map:
-        return node_map[canonical]
-    else:
-        node_name = display
-        G.add_node(node_name, label=display, type=node_type)
-        node_map[canonical] = node_name
-        st.session_state["node_canonical_map"] = node_map
-        return node_name
-
-
-def add_triples_to_graph(
-    G: nx.DiGraph, 
-    triples: List[Tuple[str, str, str]], 
-    source_label: str
-) -> int:
-    """Add directed triples to the graph. Returns count of added triples."""
-    
-    added_count = 0
-    
-    for raw_s, raw_r, raw_o in triples:
-        s = get_or_create_node(G, raw_s, "entity")
-        o = get_or_create_node(G, raw_o, "entity")
-        r = raw_r.strip()
-
-        if not (s and o and r):
-            continue
-
-        if not G.has_edge(s, o):
-            G.add_edge(s, o, relations=[], sources=set())
-
-        edge_data = G[s][o]
-        if r not in edge_data["relations"]:
-            edge_data["relations"].append(r)
-        edge_data["sources"].add(source_label)
-        
-        added_count += 1
-    
-    return added_count
-
-
-def connect_to_master(
-    G: nx.DiGraph, 
-    master_node: str, 
-    threshold_percentile: int,
+def detect_master_concept(
     base_url: str,
     api_key: str,
     model: str,
-    temperature: float
+    chunks: list[DocumentChunk],
+    temperature: float,
+) -> str:
+    excerpts: list[dict[str, str]] = []
+    per_source: dict[str, int] = {}
+    sampled_chars = 0
+    for chunk in chunks:
+        if per_source.get(chunk.source, 0) >= 2:
+            continue
+        per_source[chunk.source] = per_source.get(chunk.source, 0) + 1
+        sample = chunk.text[:1200]
+        excerpts.append({"source": chunk.citation, "text": sample})
+        sampled_chars += len(sample)
+        if sampled_chars > 7000:
+            break
+
+    system_prompt, user_prompt = master_detection_messages(excerpts)
+    response = call_llm_api(
+        base_url,
+        api_key,
+        model,
+        system_prompt,
+        user_prompt,
+        temperature,
+    )
+    concept = parse_master_concept_response(response)
+    if not 2 <= len(concept) <= 80:
+        return "Knowledge Base"
+    return concept
+
+
+def extract_chunk_claims(
+    base_url: str,
+    api_key: str,
+    model: str,
+    chunk: DocumentChunk,
+    temperature: float,
+    custom_focus: str,
 ):
-    """Connect high-importance entities to the master node with semantic relations."""
-    if master_node not in G:
-        return
-    
-    entity_nodes = [n for n in G.nodes() if G.nodes[n].get("type") != "master"]
-    
-    if not entity_nodes:
-        return
-    
-    degrees = {node: G.degree(node) for node in entity_nodes}
-    
-    if not degrees:
-        return
-    
-    sorted_nodes = sorted(degrees.items(), key=lambda x: x[1], reverse=True)
-    
-    num_to_connect = max(1, int(len(sorted_nodes) * threshold_percentile / 100))
-    # Cap at 20 to avoid massive prompt context
-    num_to_connect = min(num_to_connect, 20)
-    
-    nodes_to_process = [n for n, d in sorted_nodes[:num_to_connect] if not G.has_edge(master_node, n)]
-    
-    if not nodes_to_process:
+    system_prompt, user_prompt = extraction_messages(chunk.citation, chunk.text, custom_focus)
+    response = call_llm_api(
+        base_url,
+        api_key,
+        model,
+        system_prompt,
+        user_prompt,
+        temperature,
+    )
+    return parse_claims(response, chunk)
+
+
+def generate_master_relations(
+    base_url: str,
+    api_key: str,
+    model: str,
+    master: str,
+    nodes: list[str],
+    temperature: float,
+) -> list[tuple[str, str]]:
+    if not nodes:
+        return []
+    response = call_llm_api(
+        base_url,
+        api_key,
+        model,
+        "Return only JSON object mapping each supplied entity to a short relation from the master concept.",
+        f"Master concept: {master}\nEntities: {json.dumps(nodes, ensure_ascii=False)}",
+        temperature,
+    )
+    try:
+        payload = json.loads(response.strip().strip("`"))
+    except json.JSONDecodeError:
+        payload = {}
+    links: list[tuple[str, str]] = []
+    for node in nodes:
+        relation = payload.get(node, "relates to") if isinstance(payload, dict) else "relates to"
+        links.append((node, " ".join(str(relation).split())[:80] or "relates to"))
+    return links
+
+
+def visualize_graph(graph: nx.MultiDiGraph, height: int = 760) -> None:
+    if graph.number_of_nodes() == 0:
+        st.info("The graph is empty.")
         return
 
-    # Batch LLM call to get meaningful relations
-    system_prompt = "You are a knowledge graph expert. Define specific 1-3 word relationship verbs."
-    user_prompt = (
-        f"The Master Concept is: '{master_node}'.\n"
-        f"Determine the specific relationship from the Master Concept to these Sub-Concepts: {', '.join(nodes_to_process)}.\n"
-        "Output one line per entity: 'Sub-Concept | Relationship'\n"
-        "Example: 'Neural Networks | uses'\n"
-        "Keep relationships short (e.g., 'includes', 'requires', 'produces', 'affects')."
+    render_error = visualization_limit_error(graph.number_of_nodes(), graph.number_of_edges())
+    if render_error:
+        st.warning(render_error)
+        return
+
+    network = Network(
+        height=f"{height}px",
+        width="100%",
+        bgcolor="#070B12",
+        font_color="#EAF2FF",
+        directed=True,
+    )
+    degrees = dict(graph.degree())
+    max_degree = max(max(degrees.values(), default=0), 1)
+
+    for node, data in graph.nodes(data=True):
+        degree = degrees.get(node, 0)
+        is_master = data.get("type") == "master"
+        size = 42 if is_master else 14 + 22 * (degree / max_degree)
+        network.add_node(
+            node,
+            label=str(node),
+            title=safe_tooltip_text(f"{node}\n{degree} connected graph edges"),
+            shape="star" if is_master else "dot",
+            size=size,
+            color="#FFB45C" if is_master else "#68E1FD",
+            font={"size": 21 if is_master else 13, "face": "Inter, Arial", "color": "#F5F8FF"},
+            borderWidth=2 if is_master else 1,
+            borderWidthSelected=4,
+        )
+
+    edge_totals: dict[frozenset[object], int] = defaultdict(int)
+    for subject, obj in graph.edges():
+        edge_totals[frozenset((subject, obj))] += 1
+    edge_positions: dict[frozenset[object], int] = defaultdict(int)
+
+    for subject, obj, _key, data in graph.edges(keys=True, data=True):
+        pair = frozenset((subject, obj))
+        edge_index = edge_positions[pair]
+        edge_positions[pair] += 1
+
+        relation = str(data.get("relation", "related to"))
+        source = str(data.get("source") or "")
+        legacy_sources = [str(item) for item in data.get("legacy_sources", []) if item]
+        if not source and legacy_sources:
+            source = "legacy candidates: " + ", ".join(legacy_sources)
+        source = source or "unknown source"
+        page = data.get("page")
+        chunk = data.get("chunk_index")
+        location = f"p.{page}" if page is not None else f"chunk {chunk}"
+        evidence = str(data.get("evidence") or "")
+        title = f"{relation}\nSource: {source} · {location}"
+        if evidence:
+            title += f"\nEvidence: {evidence[:300]}"
+        if data.get("synthetic"):
+            title += "\nSynthetic overview link — not used as grounded chat evidence."
+        elif data.get("provenance_status") == "legacy-aggregated":
+            title += (
+                "\nLegacy aggregated relation — original source pairing/evidence was not preserved; "
+                "excluded from grounded chat."
+            )
+
+        network.add_edge(
+            subject,
+            obj,
+            label=relation[:18] + ("…" if len(relation) > 18 else ""),
+            title=safe_tooltip_text(title),
+            color="rgba(126, 145, 180, 0.42)",
+            arrows="to",
+            smooth=parallel_edge_smooth(edge_index, edge_totals[pair]),
+        )
+
+    network.set_options(
+        json.dumps(
+            {
+                "physics": {
+                    "solver": "forceAtlas2Based",
+                    "forceAtlas2Based": {
+                        "gravitationalConstant": -95,
+                        "centralGravity": 0.006,
+                        "springLength": 210,
+                        "springConstant": 0.045,
+                    },
+                    "stabilization": {"enabled": True, "iterations": 180},
+                },
+                "interaction": {
+                    "hover": True,
+                    "tooltipDelay": 120,
+                    "multiselect": True,
+                    "navigationButtons": True,
+                    "keyboard": True,
+                    "zoomView": True,
+                    "dragView": True,
+                    "dragNodes": True,
+                },
+            }
+        )
     )
 
+    temp_path: str | None = None
     try:
-        response = call_llm_api(base_url, api_key, model, system_prompt, user_prompt, temperature)
-        
-        # Parse map
-        rel_map = {}
-        for line in response.split('\n'):
-            if '|' in line:
-                parts = line.split('|')
-                if len(parts) >= 2:
-                    ent = parts[0].strip()
-                    rel = parts[1].strip()
-                    rel_map[ent.lower()] = rel
-        
-        for node in nodes_to_process:
-            # Fallback to 'relates to' if LLM missed one or parsing failed
-            relation = rel_map.get(node.lower(), "relates to")
-            G.add_edge(master_node, node, relations=[relation], sources=set())
-            
-    except Exception as e:
-        # Fallback if LLM fails completely
-        for node in nodes_to_process:
-            G.add_edge(master_node, node, relations=["relates to"], sources=set())
+        with tempfile.NamedTemporaryFile(delete=False, suffix=".html") as handle:
+            temp_path = handle.name
+        network.save_graph(temp_path)
+        html_content = Path(temp_path).read_text(encoding="utf-8")
+        components.html(html_content, height=height + 35, scrolling=False)
+    finally:
+        if temp_path:
+            try:
+                os.unlink(temp_path)
+            except OSError:
+                pass
 
 
-def visualize_pyvis_graph(G: nx.DiGraph, height: str = "750px"):
+def _state_upload_payload(uploaded_state) -> bytes | None:
+    if uploaded_state is None:
+        return None
+    size = getattr(uploaded_state, "size", None)
+    if isinstance(size, int) and not isinstance(size, bool) and size > MAX_STATE_BYTES:
+        raise ValueError(f"Graph state exceeds the {MAX_STATE_BYTES // _MIB} MiB safety limit.")
+    payload = uploaded_state.getvalue()
+    if len(payload) > MAX_STATE_BYTES:
+        raise ValueError(f"Graph state exceeds the {MAX_STATE_BYTES // _MIB} MiB safety limit.")
+    return bytes(payload)
+
+
+def _state_payload_fingerprint(payload: bytes | None) -> str | None:
+    if payload is None:
+        return None
+    return hashlib.sha256(payload).hexdigest()
+
+
+st.set_page_config(page_title="KnowledgeLens AI", page_icon="◉", layout="wide")
+st.markdown(
     """
-    Convert NetworkX graph to PyVis interactive HTML.
-    Supports: Infinite canvas, physics, click-to-highlight.
-    """
-    if len(G.nodes) == 0:
-        st.warning("Graph is empty.")
-        return
-
-    # 1. Create PyVis Network
-    # bgcolor=#0E1117 matches Streamlit dark mode
-    net = Network(height=height, width="100%", bgcolor="#0E1117", font_color="white", directed=True)
-    
-    # 2. Convert NetworkX to PyVis
-    # We iterate manually to control node styling precisely
-    
-    degrees = dict(G.degree())
-    max_degree = max(degrees.values()) if degrees else 1
-    
-    for node in G.nodes():
-        node_type = G.nodes[node].get("type", "entity")
-        degree = degrees.get(node, 0)
-        
-        # Base Size
-        size = 15 + (20 * (degree / max_degree))
-        
-        # Tooltip
-        title = f"{node}\nLinks: {degree}"
-        
-        # Visual Attributes
-        if node_type == "master":
-            color = "#FF6B9D"  # Pink/Red for master
-            shape = "star"
-            size = 40
-            font = {"size": 24, "face": "arial", "color": "white"}
-        else:
-            # Gradient-ish coloring based on connectivity (Blue to Teal)
-            # Use hex colors. Low degree = darker blue, High degree = bright teal
-            intensity = int(100 + (155 * (degree / max_degree)))
-            color = f"#00{intensity:02x}{intensity:02x}" # Cyan-ish
-            shape = "dot"
-            font = {"size": 14, "face": "arial", "color": "white"}
-            
-        net.add_node(
-            node, 
-            label=node, 
-            title=title, 
-            color=color, 
-            shape=shape, 
-            size=size,
-            font=font,
-            borderWidth=1,
-            borderWidthSelected=3, # Thicker border when clicked
-        )
-
-    for u, v, data in G.edges(data=True):
-        relations = data.get("relations", ["related"])
-        label = relations[0] if relations else ""
-        
-        # Truncate label if too long for visual clarity
-        if len(label) > 15:
-            label = label[:12] + "..."
-            
-        net.add_edge(
-            u, 
-            v, 
-            title=f"Relation: {', '.join(relations)}",
-            label=label,
-            color="rgba(150, 150, 150, 0.5)",
-            arrows="to"
-        )
-
-    # 3. Physics & Interaction Settings
-    # This JSON configuration enables the "click to highlight" behavior
-    # and "infinite canvas" feel (dragView, zoomView).
-    options = {
-        "nodes": {
-            "font": {
-                "strokeWidth": 0,
-                "strokeColor": "#ffffff"
-            }
-        },
-        "edges": {
-            "color": {
-                "inherit": False,
-                "opacity": 0.5
-            },
-            "smooth": {
-                "type": "continuous",
-                "forceDirection": "none"
-            }
-        },
-        "physics": {
-            "forceAtlas2Based": {
-                "gravitationalConstant": -100, # Increased repulsion (was -50)
-                "centralGravity": 0.005,       # Reduced pull to center (was 0.01)
-                "springLength": 250,           # Longer springs (was 100)
-                "springConstant": 0.05         # Looser springs (was 0.08)
-            },
-            "minVelocity": 0.75,
-            "solver": "forceAtlas2Based",
-            "stabilization": {
-                "enabled": True,
-                "iterations": 200 # Stabilize before showing
-            }
-        },
-        "interaction": {
-            "hover": True,
-            "tooltipDelay": 200,
-            "multiselect": True,
-            "navigationButtons": True,
-            "keyboard": True,
-            "zoomView": True, # Allow Zoom
-            "dragView": True, # Allow Pan (Infinite canvas)
-            "dragNodes": True # Allow dragging nodes
-        }
-    }
-    
-    # Inject options
-    net.set_options(json.dumps(options))
-
-    # 4. Save to temporary file and read back
-    # Streamlit components need HTML string or file. 
-    # Temp file is safer for large graphs than string injection sometimes.
-    try:
-        # Generate HTML
-        # Note: PyVis generates a full HTML file. We read it and inject.
-        with tempfile.NamedTemporaryFile(delete=False, suffix=".html") as tmp:
-            net.save_graph(tmp.name)
-            with open(tmp.name, "r", encoding="utf-8") as f:
-                html_content = f.read()
-        
-        # 5. Render in Streamlit
-        components.html(html_content, height=800, scrolling=False)
-        
-    except Exception as e:
-        st.error(f"Error visualizing graph: {e}")
-
-
-def get_graph_export_data(G: nx.DiGraph) -> Dict[str, Any]:
-    """Export graph in LLM-friendly format."""
-    master_nodes = [n for n in G.nodes if G.nodes[n].get("type") == "master"]
-    master = master_nodes[0] if master_nodes else None
-    
-    export = {
-        "master_concept": master,
-        "entities": [],
-        "relationships": []
-    }
-    
-    for node in G.nodes:
-        if G.nodes[node].get("type") != "master":
-            export["entities"].append({
-                "name": node,
-                "connections": G.degree(node)
-            })
-    
-    for u, v, data in G.edges(data=True):
-        for rel in data.get("relations", []):
-            export["relationships"].append({
-                "from": u,
-                "relation": rel,
-                "to": v
-            })
-    
-    return export
-
-
-def render_export_buttons():
-    """Show download buttons, including full state persistence."""
-    G = st.session_state.kg_graph
-    if len(G.edges) == 0:
-        return
-    
-    # 1. Export Data (Summary)
-    export_data = get_graph_export_data(G)
-    json_blob = json.dumps(export_data, ensure_ascii=False, indent=2)
-    
-    text_lines = [f"Master: {export_data['master_concept']}\n"]
-    text_lines.append("\nTop Entities:")
-    for ent in sorted(export_data['entities'], key=lambda x: x['connections'], reverse=True)[:30]:
-        text_lines.append(f"  • {ent['name']} ({ent['connections']} links)")
-    
-    text_lines.append("\n\nRelationships:")
-    for rel in export_data['relationships'][:100]:
-        text_lines.append(f"  {rel['from']} → {rel['relation']} → {rel['to']}")
-    
-    text_blob = "\n".join(text_lines)
-
-    # 2. Save State Data (Persistence)
-    # Serialize full NetworkX graph to JSON-compatible format
-    state_data = {
-        "master_concept": st.session_state.master_concept,
-        "graph_data": nx.node_link_data(G)
-    }
-    
-    # Custom helper to serialize sets (used in 'sources' attribute of edges)
-    def set_default(obj):
-        if isinstance(obj, set):
-            return list(obj)
-        raise TypeError
-        
-    state_blob = json.dumps(state_data, ensure_ascii=False, indent=2, default=set_default)
-
-    st.subheader("📤 Export & Save")
-    col1, col2, col3 = st.columns(3)
-    
-    with col1:
-        st.download_button(
-            "⬇️ Graph State (JSON)",
-            state_blob,
-            file_name="graph_state.json",
-            mime="application/json",
-            help="Save this file to reload the graph later without rebuilding."
-        )
-        
-    with col2:
-        st.download_button(
-            "⬇️ Data (JSON)",
-            json_blob,
-            file_name="knowledge_graph.json",
-            mime="application/json",
-            help="Export entities and relationships for external use."
-        )
-        
-    with col3:
-        st.download_button(
-            "⬇️ Summary (Txt)",
-            text_blob,
-            file_name="knowledge_graph.txt",
-            mime="text/plain",
-            help="Human-readable summary of the graph."
-        )
-
-
-def retrieve_graph_context(G: nx.DiGraph, query: str, max_tokens: int = 3000) -> str:
-    """
-    Retrieve relevant edges from the graph based on query terms.
-    Simple keyword matching strategy to find context.
-    """
-    # 1. Find relevant nodes based on query keywords
-    query_lower = query.lower()
-    relevant_nodes = []
-    
-    for node in G.nodes():
-        if str(node).lower() in query_lower:
-            relevant_nodes.append(node)
-            
-    if not relevant_nodes:
-        # If no direct keyword match, fallback to master node if available
-        master_nodes = [n for n in G.nodes if G.nodes[n].get("type") == "master"]
-        if master_nodes:
-            relevant_nodes = master_nodes
-
-    # 2. Get 1-hop subgraph text representation
-    context_lines = []
-    seen_edges = set()
-    
-    # If still no nodes, return empty (LLM will rely on its own knowledge or fail gracefully)
-    if not relevant_nodes:
-        return "No specific graph connections found for these terms."
-
-    for node in relevant_nodes:
-        # Outgoing edges
-        for _, neighbor, data in G.out_edges(node, data=True):
-            edge_key = (node, neighbor)
-            if edge_key not in seen_edges:
-                rels = ", ".join(data.get("relations", []))
-                context_lines.append(f"{node} --[{rels}]--> {neighbor}")
-                seen_edges.add(edge_key)
-        
-        # Incoming edges
-        for neighbor, _, data in G.in_edges(node, data=True):
-            edge_key = (neighbor, node)
-            if edge_key not in seen_edges:
-                rels = ", ".join(data.get("relations", []))
-                context_lines.append(f"{neighbor} --[{rels}]--> {node}")
-                seen_edges.add(edge_key)
-
-    context_str = "\n".join(context_lines)
-    return context_str[:max_tokens]
-
-
-# ---------------------------------------------------------
-# Streamlit App
-# ---------------------------------------------------------
-
-st.set_page_config(
-    page_title="AI Knowledge Graph",
-    layout="wide",
+<style>
+:root { --kl-border: rgba(120, 150, 190, .18); }
+.block-container { padding-top: 2rem; max-width: 1500px; }
+[data-testid="stMetric"] { border: 1px solid var(--kl-border); border-radius: 14px; padding: 12px 14px; }
+.kl-kicker { letter-spacing: .16em; text-transform: uppercase; font-size: .72rem; opacity: .62; }
+</style>
+""",
+    unsafe_allow_html=True,
 )
+st.markdown('<div class="kl-kicker">Evidence graph workspace</div>', unsafe_allow_html=True)
+st.title("◉ KnowledgeLens AI")
+st.markdown(
+    "Turn documents and code into a **source-backed knowledge graph**—then inspect connections, "
+    "trace evidence, and ask questions grounded in the graph."
+)
+st.caption(f"v{APP_VERSION} · OpenAI-compatible endpoints · local or cloud")
 
-st.title("🧠 AI Knowledge Graph Builder")
-st.markdown("Upload PDFs → AI extracts concepts → Interactive graph visualization")
-st.caption("Scroll to zoom • Drag background to pan • Drag nodes to rearrange • Click node to highlight connections")
-
-# Initialize state
 if "kg_graph" not in st.session_state:
-    st.session_state.kg_graph = nx.DiGraph()
-
+    st.session_state.kg_graph = nx.MultiDiGraph()
 if "node_canonical_map" not in st.session_state:
     st.session_state.node_canonical_map = {}
-
 if "master_concept" not in st.session_state:
     st.session_state.master_concept = None
-
 if "processing_complete" not in st.session_state:
     st.session_state.processing_complete = False
-
 if "chat_history" not in st.session_state:
     st.session_state.chat_history = []
+if "graph_revision" not in st.session_state:
+    st.session_state.graph_revision = 0
+if "loaded_state_fingerprint" not in st.session_state:
+    st.session_state.loaded_state_fingerprint = None
+if "staged_sources" not in st.session_state:
+    st.session_state.staged_sources: list[StagedUpload] = []
+if "source_upload_revision" not in st.session_state:
+    st.session_state.source_upload_revision = 0
 
-
-# Sidebar
 with st.sidebar:
-    st.header("🔧 LLM Configuration")
+    st.header("Model connection")
+    providers = ["Ollama / local", "llama.cpp / local", "OpenAI"]
+    if os.getenv("KNOWLEDGELENS_CUSTOM_ENDPOINT", "").strip():
+        providers.append("Configured endpoint")
 
-    base_url = st.text_input(
-        "Base URL (Ollama/Llama.cpp/OpenAI)",
-        value="http://localhost:11434",
-        help="e.g. http://localhost:11434 or http://localhost:8080"
+    default_index = 0 if env_flag("KNOWLEDGELENS_ALLOW_LOCAL_ENDPOINTS") else providers.index("OpenAI")
+    provider = st.selectbox("Provider", providers, index=default_index)
+    provider_key = provider_state_key(provider)
+    base_url = configured_endpoint(provider)
+    st.text_input(
+        "Endpoint",
+        value=base_url,
+        disabled=True,
+        help="Custom endpoints are configured by the operator via KNOWLEDGELENS_CUSTOM_ENDPOINT.",
     )
-
     api_key = st.text_input(
-        "API Key (Optional)",
+        "API key",
         type="password",
-        help="Required for OpenAI or secured local endpoints"
+        key=f"api_key_{provider_key}",
+        max_chars=MAX_API_KEY_CHARS,
+        help=(
+            "Required for OpenAI; optional for local/configured endpoints. Credentials are isolated per provider "
+            "and never written to graph exports."
+        ),
     )
-
+    default_model = "llama3.1" if provider != "OpenAI" else "gpt-4o-mini"
     model_name = st.text_input(
         "Model",
-        value="llama3.1",
+        value=default_model,
+        key=f"model_{provider_key}",
+        max_chars=MAX_MODEL_NAME_CHARS,
     )
+    temperature = st.slider("Temperature", 0.0, 1.0, 0.1, 0.05)
 
-    temperature = st.slider(
-        "Temperature",
-        0.0, 1.0, 0.1, 0.05
-    )
+    try:
+        validate_endpoint(base_url)
+        st.caption("✓ Endpoint passes the current network policy")
+    except EndpointPolicyError as exc:
+        st.caption(f"Endpoint policy: {exc}")
 
-    st.markdown("---")
-    st.header("⚙️ Graph Settings")
-
-    auto_detect = st.checkbox(
-        "Auto-detect master concept",
-        value=True,
-    )
-    
+    st.divider()
+    st.header("Graph extraction")
+    auto_detect = st.checkbox("Auto-detect master concept", value=True)
     manual_master = st.text_input(
-        "Or set manually:",
-        value="",
-        disabled=auto_detect
+        "Master concept",
+        disabled=auto_detect,
+        max_chars=MAX_ENTITY_LABEL_CHARS,
+    )
+    master_link_count = st.slider(
+        "Overview links",
+        3,
+        20,
+        10,
+        help="Synthetic links from the master concept to highly connected entities.",
+    )
+    custom_focus = st.text_area(
+        "Optional extraction focus",
+        placeholder="Example: prioritize APIs, dependencies, failure modes, and ownership.",
+        max_chars=MAX_EXTRACTION_FOCUS_CHARS,
     )
 
-    connection_pct = st.slider(
-        "Master connections (%)",
-        50, 95, 70,
-        help="Top % of nodes to connect to master"
+    st.divider()
+    st.header("Persistence")
+    uploaded_state = st.file_uploader(
+        "Load graph state",
+        type=["json"],
+        key="state_loader",
+        max_upload_size=MAX_STATE_BYTES // _MIB,
     )
-
-    # Customizable Extraction Prompt
-    custom_extraction_prompt = st.text_area(
-        "Custom Extraction Focus (Optional)",
-        placeholder="e.g. Focus on dates and timeline events...",
-        help="Instructions for the AI to focus on specific types of relationships."
-    )
-
-    st.markdown("---")
-    
-    # Persistence: Load Graph
-    st.header("💾 Persistence")
-    uploaded_graph_state = st.file_uploader(
-        "Load Graph State (JSON)", 
-        type="json",
-        help="Upload a previously saved 'Graph State' JSON file to restore the graph."
-    )
-
-    if uploaded_graph_state is not None:
-        try:
-            state_data = json.load(uploaded_graph_state)
-            if "graph_data" in state_data:
-                # Reconstruct graph
-                G_loaded = nx.node_link_graph(state_data["graph_data"])
-                
-                # Fix sets: Convert list back to set for 'sources' attribute
-                for u, v, data in G_loaded.edges(data=True):
-                    if "sources" in data and isinstance(data["sources"], list):
-                        data["sources"] = set(data["sources"])
-                        
-                st.session_state.kg_graph = G_loaded
-                st.session_state.master_concept = state_data.get("master_concept")
+    try:
+        state_payload = _state_upload_payload(uploaded_state)
+    except ValueError as exc:
+        state_payload = None
+        current_state_fingerprint = st.session_state.loaded_state_fingerprint
+        st.error(str(exc))
+    else:
+        current_state_fingerprint = _state_payload_fingerprint(state_payload)
+        if uploaded_state is None:
+            st.session_state.loaded_state_fingerprint = None
+        elif current_state_fingerprint != st.session_state.loaded_state_fingerprint:
+            try:
+                loaded, master, node_map = deserialize_graph_state(state_payload or b"")
+                loaded_stats = graph_to_export(loaded)["stats"]
+                st.session_state.kg_graph = loaded
+                st.session_state.master_concept = master
+                st.session_state.node_canonical_map = node_map
                 st.session_state.processing_complete = True
-                st.success(f"✅ Loaded graph with {len(G_loaded.nodes)} nodes")
-            else:
-                st.error("Invalid graph state file format.")
-        except Exception as e:
-            st.error(f"Error loading graph: {e}")
+                st.session_state.chat_history = []
+                st.session_state.graph_revision += 1
+                st.success(
+                    f"Loaded {loaded.number_of_nodes()} nodes / {loaded_stats['claims']} source-backed claims"
+                    f" / {loaded_stats['legacy_claims']} legacy ungrounded claims"
+                    f" / {loaded_stats['topology_edges']} topology edges"
+                )
+            except Exception as exc:
+                st.error(f"Could not load graph state: {exc}")
+            finally:
+                st.session_state.loaded_state_fingerprint = current_state_fingerprint
 
-    st.markdown("---")
-
-    if st.button("🗑️ Clear All", use_container_width=True):
-        st.session_state.kg_graph = nx.DiGraph()
+    if st.button("Clear workspace", use_container_width=True):
+        st.session_state.kg_graph = nx.MultiDiGraph()
         st.session_state.node_canonical_map = {}
         st.session_state.master_concept = None
         st.session_state.processing_complete = False
         st.session_state.chat_history = []
+        st.session_state.loaded_state_fingerprint = current_state_fingerprint
+        st.session_state.graph_revision += 1
         st.rerun()
 
-
-# File upload
 supported_extensions = [
-    "pdf", "txt", "md", "markdown", "json", "xml", "html", "htm", 
-    "css", "js", "ts", "tsx", "jsx", "py", "java", "c", "cpp", "h", 
-    "cs", "go", "rs", "php", "rb", "kt", "swift", "sh", "yaml", "yml", 
-    "sql", "r", "m", "tex", "latex", "toml", "ini", "bat", "ps1"
+    "pdf",
+    "txt",
+    "md",
+    "markdown",
+    "json",
+    "xml",
+    "html",
+    "htm",
+    "css",
+    "js",
+    "ts",
+    "tsx",
+    "jsx",
+    "py",
+    "java",
+    "c",
+    "cpp",
+    "h",
+    "cs",
+    "go",
+    "rs",
+    "php",
+    "rb",
+    "kt",
+    "swift",
+    "sh",
+    "yaml",
+    "yml",
+    "sql",
+    "r",
+    "m",
+    "tex",
+    "latex",
+    "toml",
+    "ini",
+    "bat",
+    "ps1",
 ]
 
-uploaded_files = st.file_uploader(
-    "📄 Upload Documents (PDF, Text, Code, XML)",
-    type=supported_extensions,
-    accept_multiple_files=True,
+st.subheader("Stage source files")
+staged_sources: list[StagedUpload] = list(st.session_state.staged_sources)
+staged_bytes = staged_upload_total(staged_sources)
+remaining_bytes = remaining_upload_bytes(staged_sources, DEFAULT_INGESTION_LIMITS.max_upload_bytes)
+st.caption(
+    f"{len(staged_sources)}/{DEFAULT_INGESTION_LIMITS.max_files} files staged · "
+    f"{staged_bytes / _MIB:.2f}/{DEFAULT_INGESTION_LIMITS.max_upload_bytes / _MIB:g} MiB retained · "
+    f"{remaining_bytes / _MIB:.2f} MiB remaining"
 )
 
-# Build button
-if st.button("🚀 Build Graph", type="primary", use_container_width=True):
-    
-    if not uploaded_files:
-        st.error("❌ Please upload at least one file")
-        st.stop()
+if staged_sources:
+    for item in staged_sources:
+        st.write(f"• {item.name} · {item.size / _MIB:.2f} MiB")
+    if st.button("Clear staged sources"):
+        st.session_state.staged_sources = []
+        st.session_state.source_upload_revision += 1
+        st.rerun()
 
-    if not base_url or not model_name:
-        st.error("❌ Configure LLM settings in sidebar")
-        st.stop()
-
-    # Reset state for new build
-    st.session_state.processing_complete = False
-    
-    # Read all files
-    all_texts = []
-    with st.spinner("📖 Reading files..."):
-        for f in uploaded_files:
-            try:
-                text = extract_text_from_file(f)
-                if text.strip():
-                    all_texts.append((f.name, text))
-            except Exception as e:
-                st.warning(f"Could not read {f.name}: {e}")
-    
-    if not all_texts:
-        st.error("❌ No text extracted from files")
-        st.stop()
-    
-    st.success(f"✅ Read {len(all_texts)} document(s)")
-    
-    # Detect master concept
-    master_concept = None
-    if auto_detect:
-        with st.spinner("🎯 Detecting central concept..."):
-            try:
-                master_concept = extract_master_concept(base_url, api_key, model_name, all_texts, temperature)
-                st.session_state.master_concept = master_concept
-                st.info(f"🎯 Master concept: **{master_concept}**")
-            except Exception as e:
-                st.error(f"Failed to detect master concept: {e}")
-                master_concept = "Knowledge Base"
-                st.session_state.master_concept = master_concept
-    else:
-        master_concept = manual_master.strip() or "Knowledge Base"
-        st.session_state.master_concept = master_concept
-        st.info(f"🎯 Master concept: **{master_concept}**")
-    
-    # Initialize graph
-    G = nx.DiGraph()
-    G.add_node(master_concept, label=master_concept, type="master")
-    
-    # Reset node map for new graph
-    st.session_state.node_canonical_map = {}
-    
-    # Prepare chunks
-    all_chunks = []
-    for doc_name, text in all_texts:
-        chunks = chunk_text(text, max_chars=2500)
-        for chunk in chunks:
-            all_chunks.append((doc_name, chunk))
-    
-    st.info(f"📦 Processing {len(all_chunks)} chunks...")
-    
-    # Triple extraction prompt (Enhanced with Custom Focus)
-    base_system_prompt = (
-        "You are a knowledge extraction expert. Extract key relationships as triples.\n"
-        "Format: SUBJECT | RELATIONSHIP | OBJECT\n"
-        "Rules:\n"
-        "- One triple per line\n"
-        "- Use clear, specific entity names\n"
-        "- Use meaningful relationship verbs\n"
-        "- No numbering, no extra text\n"
+next_upload_limit = next_upload_limit_mb(
+    staged_sources,
+    DEFAULT_INGESTION_LIMITS.max_upload_bytes,
+    DEFAULT_INGESTION_LIMITS.max_files,
+)
+if next_upload_limit is not None:
+    pending_source = st.file_uploader(
+        "Add one source file",
+        type=supported_extensions,
+        accept_multiple_files=False,
+        key=f"source_stager_{st.session_state.source_upload_revision}",
+        max_upload_size=next_upload_limit,
+        help=(
+            "Sources are staged one at a time. After each file is retained, this uploader is recreated with a "
+            "limit derived from the remaining 24 MiB aggregate build budget."
+        ),
     )
-    
-    if custom_extraction_prompt and custom_extraction_prompt.strip():
-        base_system_prompt += f"\nIMPORTANT FOCUS: {custom_extraction_prompt.strip()}\n"
-    else:
-        base_system_prompt += "- Focus on important factual relationships\n"
-
-    
-    # Process chunks
-    progress_bar = st.progress(0)
-    status_text = st.empty()
-    
-    total_triples = 0
-    
-    for idx, (doc_name, chunk) in enumerate(all_chunks, 1):
-        status_text.text(f"⚙️ Processing chunk {idx}/{len(all_chunks)} from {doc_name}...")
-        
-        user_prompt = (
-            f"Extract knowledge triples from this text:\n\n"
-            f"{chunk}\n\n"
-            f"Output ONLY triples in format: SUBJECT | RELATIONSHIP | OBJECT"
-        )
-        
+    if pending_source is not None:
         try:
-            llm_output = call_llm_api(
-                base_url, api_key, model_name, base_system_prompt, user_prompt, temperature
+            staged_sources = stage_uploaded_file(
+                staged_sources,
+                pending_source,
+                max_bytes=DEFAULT_INGESTION_LIMITS.max_upload_bytes,
+                max_files=DEFAULT_INGESTION_LIMITS.max_files,
             )
-            
-            triples = parse_triples_with_direction(llm_output)
-            
-            if triples:
-                added = add_triples_to_graph(G, triples, doc_name)
-                total_triples += added
-            
-        except Exception as e:
-            st.warning(f"⚠️ Error on chunk {idx}: {str(e)[:100]}")
-        
-        progress_bar.progress(idx / len(all_chunks))
-    
-    # Connect master to important nodes
-    if len(G.nodes) > 1:
-        status_text.text("🔗 Connecting master node to key entities...")
-        connect_to_master(G, master_concept, connection_pct, base_url, api_key, model_name, temperature)
-    
-    # Save graph
-    st.session_state.kg_graph = G
+        except ValueError as exc:
+            st.error(str(exc))
+        else:
+            st.session_state.staged_sources = staged_sources
+            st.session_state.source_upload_revision += 1
+            st.rerun()
+else:
+    st.info("The source-file count or aggregate upload budget is full. Build the graph or clear staged sources.")
+
+if st.button("Build evidence graph", type="primary", use_container_width=True):
+    if not st.session_state.staged_sources:
+        st.error("Add at least one document first.")
+        st.stop()
+
+    request_error = request_configuration_error(provider, api_key, model_name)
+    if request_error:
+        st.error(request_error)
+        st.stop()
+    master_error = manual_master_concept_error(auto_detect, manual_master)
+    if master_error:
+        st.error(master_error)
+        st.stop()
+    focus_error = extraction_focus_error(custom_focus)
+    if focus_error:
+        st.error(focus_error)
+        st.stop()
+    try:
+        validate_endpoint(base_url)
+    except EndpointPolicyError as exc:
+        st.error(str(exc))
+        st.stop()
+
+    # Fresh independent streams are created only for a requested build; normal
+    # reruns retain only the bounded staged byte records, not another file copy.
+    uploaded_files = materialize_staged_uploads(st.session_state.staged_sources)
+    with st.spinner("Reading and chunking sources…"):
+        ingest_result = prepare_chunks(uploaded_files)
+    chunks, ingest_warnings = ingest_result
+    for warning in ingest_warnings:
+        st.warning(warning)
+    if ingest_result.fatal_error:
+        st.error(ingest_result.fatal_error)
+        st.stop()
+    if not chunks:
+        st.error("No extractable text was found. Scanned PDFs currently require OCR before upload.")
+        st.stop()
+
+    request_circuit = RequestFailureCircuit()
+    try:
+        if auto_detect:
+            with st.spinner("Finding the central concept…"):
+                master = detect_master_concept(base_url, api_key, model_name, chunks, temperature)
+            request_circuit.record_success()
+        else:
+            master = manual_master.strip() or "Knowledge Base"
+    except Exception as exc:
+        if auto_detect:
+            request_circuit.record_failure()
+        st.warning(f"Master concept detection failed: {exc}")
+        master = manual_master.strip() or "Knowledge Base"
+
+    graph, node_map = create_graph(master)
+    progress = st.progress(0)
+    status = st.empty()
+    failures = 0
+
+    for index, chunk in enumerate(chunks, start=1):
+        status.caption(f"Extracting claims · {index}/{len(chunks)} · {chunk.citation}")
+        try:
+            claims = extract_chunk_claims(base_url, api_key, model_name, chunk, temperature, custom_focus)
+        except Exception as exc:
+            failures += 1
+            circuit_open = request_circuit.record_failure()
+            st.warning(f"Skipped {chunk.citation}: {str(exc)[:180]}")
+            if circuit_open:
+                status.empty()
+                progress.empty()
+                st.error(
+                    "Stopped extraction after "
+                    f"{request_circuit.consecutive_failures} consecutive model request failures. "
+                    "Check the provider, credential, model, and endpoint before retrying."
+                )
+                st.stop()
+            progress.progress(index / len(chunks))
+            continue
+
+        request_circuit.record_success()
+        try:
+            add_claims(graph, node_map, claims)
+        except GraphCapacityError as exc:
+            status.empty()
+            progress.empty()
+            st.error(str(exc))
+            st.stop()
+        progress.progress(index / len(chunks))
+
+    if graph.number_of_nodes() > 1:
+        candidates = top_entities(graph, master_link_count)
+        try:
+            links = generate_master_relations(base_url, api_key, model_name, master, candidates, temperature)
+        except Exception:
+            links = [(node, "relates to") for node in candidates]
+        try:
+            add_master_links(graph, node_map, master, links)
+        except GraphCapacityError as exc:
+            st.warning(f"Overview topology was capped by the graph safety envelope: {exc}")
+
+    build_stats = graph_to_export(graph)["stats"]
+    status.empty()
+    progress.empty()
+
+    build_error = no_claims_build_error(build_stats["claims"], failures)
+    if build_error:
+        st.error(build_error)
+        st.stop()
+
+    # Commit a new graph to session state only after at least one auditable claim
+    # survives extraction. A failed rebuild therefore cannot replace a good workspace.
+    st.session_state.kg_graph = graph
+    st.session_state.node_canonical_map = node_map
+    st.session_state.master_concept = master
     st.session_state.processing_complete = True
-    
-    # Final stats
-    num_nodes = len(G.nodes)
-    num_edges = len(G.edges)
-    
-    status_text.empty()
-    progress_bar.empty()
-    
-    if num_nodes > 1:
-        st.success(f"✅ **Graph built!** {num_nodes} nodes, {num_edges} edges, {total_triples} triples extracted")
-    else:
-        st.warning(f"⚠️ Only master node created. Try: (1) Different model, (2) Lower temperature, (3) Check if PDFs have extractable text")
-    
+    st.session_state.chat_history = []
+    st.session_state.loaded_state_fingerprint = current_state_fingerprint
+    st.session_state.graph_revision += 1
+    st.success(
+        f"Built {graph.number_of_nodes()} nodes and {build_stats['claims']} source-traceable claims "
+        f"plus {build_stats['topology_edges']} topology edges. {failures} chunks failed."
+    )
     st.rerun()
 
+if st.session_state.processing_complete or st.session_state.kg_graph.number_of_nodes() > 0:
+    graph = st.session_state.kg_graph
+    export_data = graph_to_export(graph)
+    source_count = export_data["stats"]["sources"]
+    claim_count = export_data["stats"]["claims"]
+    legacy_claim_count = export_data["stats"]["legacy_claims"]
 
-# Display graph and chat
-if st.session_state.processing_complete or len(st.session_state.kg_graph.nodes) > 0:
-    st.markdown("---")
-    
-    G = st.session_state.kg_graph
-    
-    # Top Metrics
-    col1, col2, col3 = st.columns(3)
-    with col1:
-        st.metric("🎯 Master", st.session_state.master_concept or "None")
-    with col2:
-        st.metric("🔵 Concepts", len(G.nodes) - 1)
-    with col3:
-        st.metric("🔗 Links", len(G.edges))
-    
-    # Viz
-    st.markdown("### 🗺️ Interactive Knowledge Graph")
-    visualize_pyvis_graph(G)
-    
-    # Export
-    render_export_buttons()
-    
-    st.markdown("---")
-    
-    # Graph RAG Chat Interface
-    st.subheader("💬 Chat with your Graph")
-    st.caption("Ask questions about the concepts and relationships visualized above.")
-    
-    # Chat Container
-    chat_container = st.container()
-    
-    # User Input
-    user_query = st.chat_input("Ask about connections (e.g., 'How does X relate to Y?')")
-    
+    st.divider()
+    c1, c2, c3, c4 = st.columns(4)
+    c1.metric("Master concept", st.session_state.master_concept or "—")
+    c2.metric("Entities", max(0, graph.number_of_nodes() - 1))
+    c3.metric("Claims", claim_count)
+    c4.metric("Sources", source_count)
+
+    st.subheader("Explore the evidence graph")
+    st.caption(
+        f"Hover an edge to see its source and evidence. The graph also contains "
+        f"{export_data['stats']['topology_edges']} synthetic topology edges and {legacy_claim_count} legacy relations; "
+        "neither is counted as an auditable claim or used for grounded chat."
+    )
+    visualize_graph(graph)
+
+    st.subheader("Export & continue later")
+    e1, e2, e3 = st.columns(3)
+    try:
+        state_export = serialize_graph_state(
+            graph,
+            st.session_state.master_concept,
+            st.session_state.node_canonical_map,
+        )
+    except ValueError as exc:
+        e1.warning(f"Graph state export unavailable: {exc}")
+    else:
+        e1.download_button(
+            "Graph state",
+            state_export,
+            file_name="knowledgelens_state.json",
+            mime="application/json",
+            use_container_width=True,
+        )
+    e2.download_button(
+        "Evidence graph JSON",
+        json.dumps(export_data, ensure_ascii=False, indent=2),
+        file_name="knowledgelens_graph.json",
+        mime="application/json",
+        use_container_width=True,
+    )
+
+    readable_lines: list[str] = []
+    for claim in export_data["claims"]:
+        source = claim["source"]
+        if claim.get("synthetic"):
+            source = "SYNTHETIC TOPOLOGY · non-evidentiary"
+        elif claim.get("provenance_status") == "legacy-aggregated":
+            candidates = ", ".join(claim.get("legacy_sources", [])) or "unknown"
+            source = f"LEGACY AGGREGATED · non-grounded · candidates: {candidates}"
+        elif not source and claim.get("legacy_sources"):
+            source = "legacy candidates: " + ", ".join(claim["legacy_sources"])
+        source = source or "unknown source"
+        location = f"p.{claim['page']}" if claim["page"] is not None else f"chunk {claim['chunk_index']}"
+        readable_lines.append(
+            f"[{source} · {location}] {claim['subject']} --[{claim['relation']}]--> {claim['object']}"
+        )
+    e3.download_button(
+        "Claim ledger",
+        "\n".join(readable_lines),
+        file_name="knowledgelens_claims.txt",
+        mime="text/plain",
+        use_container_width=True,
+    )
+
+    st.divider()
+    st.subheader("Ask the graph")
+    st.caption("Answers are constrained to retrieved source-backed claims and their citations.")
+
+    user_query = st.chat_input(
+        "How are these concepts connected? What evidence supports this claim?",
+        max_chars=MAX_CHAT_QUERY_CHARS,
+    )
     if user_query:
-        # Add user message
-        st.session_state.chat_history.append({"role": "user", "content": user_query})
-        
-        # 1. Retrieve Context from Graph
-        context_text = retrieve_graph_context(G, user_query)
-        
-        # 2. Formulate System Prompt for RAG
-        rag_system_prompt = (
-            "You are a helpful assistant answering questions based ONLY on the provided knowledge graph context. "
-            "If the context doesn't contain the answer, say so. "
-            "Do not hallucinate facts not present in the triples. "
-            "Cite the specific relationships used to answer."
-        )
-        
-        rag_user_prompt = (
-            f"Context from Knowledge Graph:\n{context_text}\n\n"
-            f"Question: {user_query}\n\n"
-            f"Answer based on the context above:"
-        )
-        
-        # 3. Call LLM
-        try:
-            with st.spinner("🤖 Thinking with graph context..."):
-                answer = call_llm_api(
-                    base_url, 
-                    api_key,
-                    model_name, 
-                    rag_system_prompt, 
-                    rag_user_prompt, 
-                    temperature
-                )
-            
-            # Add assistant message
-            st.session_state.chat_history.append({"role": "assistant", "content": answer})
-            
-        except Exception as e:
-            st.error(f"Error generating answer: {e}")
+        request_error = request_configuration_error(provider, api_key, model_name)
+        query_error = chat_query_error(user_query)
+        if request_error:
+            st.error(request_error)
+        elif query_error:
+            st.error(query_error)
+        else:
+            st.session_state.chat_history.append({"role": "user", "content": user_query})
+            context = retrieve_graph_context(graph, user_query)
+            system_prompt, user_prompt = grounded_chat_messages(context, user_query)
+            try:
+                with st.spinner("Tracing graph evidence…"):
+                    answer = call_llm_api(
+                        base_url,
+                        api_key,
+                        model_name,
+                        system_prompt,
+                        user_prompt,
+                        temperature,
+                    )
+                st.session_state.chat_history.append({"role": "assistant", "content": answer})
+            except Exception as exc:
+                st.error(f"Could not answer: {exc}")
 
-    # Render Chat History
-    with chat_container:
-        for message in st.session_state.chat_history:
-            if message["role"] == "user":
-                st.chat_message("user").write(message["content"])
-            else:
-                st.chat_message("assistant").write(message["content"])
-
+    for message in st.session_state.chat_history:
+        with st.chat_message(message["role"]):
+            st.write(message["content"])
 else:
-    st.info("👆 Upload PDFs and click 'Build Graph' to start")
+    st.info("Stage source files above to build your first evidence graph.")
