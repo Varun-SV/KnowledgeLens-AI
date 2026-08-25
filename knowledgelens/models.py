@@ -11,6 +11,7 @@ class DocumentChunk:
     chunk_index: int
     page: int | None = None
     overlap_from_previous: bool = False
+    overlap_prefix: str = ""
 
     @property
     def citation(self) -> str:
