@@ -179,7 +179,7 @@ def _validate_serialized_identities(
             raise ValueError(f"Graph state contains duplicate serialized node identifier: {node_id!r}.")
         node_ids.add(node_id)
 
-    seen_edges: set[tuple[str, ...]] = set()
+    seen_edges: set[tuple[object, ...]] = set()
     for edge in graph_data[edge_field]:
         if not isinstance(edge, dict):
             raise ValueError("Graph state edges must be JSON objects.")
@@ -192,9 +192,11 @@ def _validate_serialized_identities(
             key = edge.get(key_field)
             if not isinstance(key, (str, int)) or isinstance(key, bool):
                 raise ValueError("Graph state v2 edges must contain a string or integer structural key.")
-            identity = (str(subject), str(obj), str(key))
+            # Preserve JSON key type: NetworkX treats integer 1 and string "1" as
+            # distinct MultiDiGraph keys and so must the pre-materialization check.
+            identity = (subject, obj, key)
         else:
-            identity = (str(subject), str(obj))
+            identity = (subject, obj)
 
         if identity in seen_edges:
             raise ValueError("Graph state contains duplicate serialized edge identity that would lose data.")
