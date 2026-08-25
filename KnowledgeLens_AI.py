@@ -21,7 +21,7 @@ from knowledgelens.graph import (
     top_entities,
 )
 from knowledgelens.http_client import PinnedRequestError, post_json_pinned
-from knowledgelens.ingestion import prepare_chunks
+from knowledgelens.ingestion import DEFAULT_INGESTION_LIMITS, prepare_chunks
 from knowledgelens.limits import (
     MAX_API_KEY_CHARS,
     MAX_CHAT_QUERY_CHARS,
@@ -33,6 +33,7 @@ from knowledgelens.models import DocumentChunk
 from knowledgelens.parsing import parse_claims, parse_master_concept_response
 from knowledgelens.persistence import MAX_STATE_BYTES, deserialize_graph_state, serialize_graph_state
 from knowledgelens.presentation import parallel_edge_smooth, safe_tooltip_text, visualization_limit_error
+from knowledgelens.resilience import RequestFailureCircuit
 from knowledgelens.retrieval import retrieve_graph_context
 from knowledgelens.runtime import (
     chat_query_error,
@@ -418,7 +419,12 @@ with st.sidebar:
 
     st.divider()
     st.header("Persistence")
-    uploaded_state = st.file_uploader("Load graph state", type=["json"], key="state_loader")
+    uploaded_state = st.file_uploader(
+        "Load graph state",
+        type=["json"],
+        key="state_loader",
+        max_upload_size=MAX_STATE_BYTES // (1024 * 1024),
+    )
     try:
         state_payload = _state_upload_payload(uploaded_state)
     except ValueError as exc:
@@ -469,6 +475,7 @@ uploaded_files = st.file_uploader(
     "Add documents or source files",
     type=supported_extensions,
     accept_multiple_files=True,
+    max_upload_size=DEFAULT_INGESTION_LIMITS.max_upload_bytes // (1024 * 1024),
     help="Text-based PDFs are supported. Scanned-image OCR is not included yet.",
 )
 
@@ -506,13 +513,17 @@ if st.button("Build evidence graph", type="primary", use_container_width=True):
         st.error("No extractable text was found. Scanned PDFs currently require OCR before upload.")
         st.stop()
 
+    request_circuit = RequestFailureCircuit()
     try:
         if auto_detect:
             with st.spinner("Finding the central concept…"):
                 master = detect_master_concept(base_url, api_key, model_name, chunks, temperature)
+            request_circuit.record_success()
         else:
             master = manual_master.strip() or "Knowledge Base"
     except Exception as exc:
+        if auto_detect:
+            request_circuit.record_failure()
         st.warning(f"Master concept detection failed: {exc}")
         master = manual_master.strip() or "Knowledge Base"
 
@@ -525,15 +536,30 @@ if st.button("Build evidence graph", type="primary", use_container_width=True):
         status.caption(f"Extracting claims · {index}/{len(chunks)} · {chunk.citation}")
         try:
             claims = extract_chunk_claims(base_url, api_key, model_name, chunk, temperature, custom_focus)
+        except Exception as exc:
+            failures += 1
+            circuit_open = request_circuit.record_failure()
+            st.warning(f"Skipped {chunk.citation}: {str(exc)[:180]}")
+            if circuit_open:
+                status.empty()
+                progress.empty()
+                st.error(
+                    "Stopped extraction after "
+                    f"{request_circuit.consecutive_failures} consecutive model request failures. "
+                    "Check the provider, credential, model, and endpoint before retrying."
+                )
+                st.stop()
+            progress.progress(index / len(chunks))
+            continue
+
+        request_circuit.record_success()
+        try:
             add_claims(graph, node_map, claims)
         except GraphCapacityError as exc:
             status.empty()
             progress.empty()
             st.error(str(exc))
             st.stop()
-        except Exception as exc:
-            failures += 1
-            st.warning(f"Skipped {chunk.citation}: {str(exc)[:180]}")
         progress.progress(index / len(chunks))
 
     if graph.number_of_nodes() > 1:
