@@ -1,6 +1,7 @@
 from io import BytesIO
 
-from knowledgelens.ingestion import chunk_section, prepare_chunks
+import knowledgelens.ingestion as ingestion
+from knowledgelens.ingestion import IngestionLimits, chunk_section, prepare_chunks
 
 
 class UploadedBytes(BytesIO):
@@ -68,6 +69,64 @@ def test_mid_content_oversized_split_retains_overlap():
 
     assert len(chunks) >= 2
     assert chunks[0][-20:] == chunks[1][:20]
+
+
+def test_upload_byte_budget_rejects_before_any_extraction(monkeypatch):
+    def must_not_extract(_uploaded_file):
+        raise AssertionError("extraction must not run after upload budget rejection")
+
+    monkeypatch.setattr(ingestion, "_extract_sections_with_warnings", must_not_extract)
+    limits = IngestionLimits(max_files=2, max_upload_bytes=8, max_extracted_chars=100, max_chunks=10)
+    chunks, warnings = prepare_chunks([UploadedBytes("large.txt", b"x" * 9)], limits=limits)
+
+    assert chunks == []
+    assert "combined uploads" in warnings[-1]
+
+
+def test_extracted_text_and_chunk_budgets_fail_closed():
+    text_file = UploadedBytes("large.txt", b"A" * 40)
+    char_limits = IngestionLimits(max_files=2, max_upload_bytes=100, max_extracted_chars=20, max_chunks=10)
+    chunks, warnings = prepare_chunks([text_file], limits=char_limits)
+    assert chunks == []
+    assert "extracted text" in warnings[-1]
+
+    text_file = UploadedBytes("many.txt", b"A" * 7000)
+    chunk_limits = IngestionLimits(max_files=2, max_upload_bytes=10_000, max_extracted_chars=10_000, max_chunks=1)
+    chunks, warnings = prepare_chunks([text_file], limits=chunk_limits)
+    assert chunks == []
+    assert "model requests" in warnings[-1]
+
+
+def test_file_count_budget_fails_closed():
+    limits = IngestionLimits(max_files=1, max_upload_bytes=100, max_extracted_chars=100, max_chunks=10)
+    chunks, warnings = prepare_chunks(
+        [UploadedBytes("a.txt", b"a"), UploadedBytes("b.txt", b"b")],
+        limits=limits,
+    )
+    assert chunks == []
+    assert "at most 1 files" in warnings[-1]
+
+
+def test_partial_pdf_extraction_surfaces_missing_and_failed_pages(monkeypatch):
+    class FakePage:
+        def __init__(self, text=None, *, fail=False):
+            self.text = text
+            self.fail = fail
+
+        def extract_text(self):
+            if self.fail:
+                raise ValueError("corrupt page")
+            return self.text
+
+    class FakeReader:
+        pages = [FakePage("Alpha supports Beta"), FakePage(""), FakePage(fail=True)]
+
+    monkeypatch.setattr(ingestion, "PdfReader", lambda _stream: FakeReader())
+    chunks, warnings = prepare_chunks([UploadedBytes("mixed.pdf", b"fake-pdf")])
+
+    assert [chunk.page for chunk in chunks] == [1]
+    assert any("page(s) 2 had no extractable text" in warning for warning in warnings)
+    assert any("failed on page(s) 3" in warning for warning in warnings)
 
 
 def test_unique_filename_keeps_readable_source_name():
