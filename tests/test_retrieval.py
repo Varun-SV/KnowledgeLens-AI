@@ -183,3 +183,14 @@ def test_context_budget_prioritizes_selected_entity_path_before_dense_neighborho
     assert "Bridge --[supports]--> Beta" in context
     assert len(context) <= 500
     assert not context.endswith("...")
+
+
+def test_path_header_is_omitted_when_no_supporting_claim_fits_budget():
+    graph = nx.MultiDiGraph()
+    _edge(graph, "Alpha", "Beta", "ab", "connects", evidence="supported by a source")
+
+    header = "[graph path] Alpha -- Beta"
+    context = retrieve_graph_context(graph, "Compare Alpha and Beta", max_chars=len(header))
+
+    assert header not in context
+    assert "No specific source-backed graph connections" in context
