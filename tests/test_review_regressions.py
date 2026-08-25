@@ -1,12 +1,13 @@
 import json
 from pathlib import Path
 
+import networkx as nx
 import pytest
 
 from knowledgelens.graph import add_claims, create_graph
 from knowledgelens.models import Claim, DocumentChunk
 from knowledgelens.parsing import parse_claims
-from knowledgelens.persistence import deserialize_graph_state
+from knowledgelens.persistence import deserialize_graph_state, serialize_graph_state
 from knowledgelens.resilience import RequestFailureCircuit
 
 _NODE_LINK_FIELDS = {
@@ -99,6 +100,32 @@ def test_loader_rejects_duplicate_serialized_multiedge_identity_before_data_loss
 
     with pytest.raises(ValueError, match="duplicate serialized edge"):
         deserialize_graph_state(raw)
+
+
+def test_loader_rejects_case_colliding_master_and_entity_canonical_ids():
+    graph_data = {
+        "directed": True,
+        "multigraph": True,
+        "nodes": [
+            {"__kl_id": "Cache", "type": "master"},
+            {"__kl_id": "cache", "type": "entity"},
+        ],
+        "edges": [],
+        _NODE_LINK_META: dict(_NODE_LINK_FIELDS),
+    }
+    raw = json.dumps({"schema_version": 2, "master_concept": "Cache", "graph_data": graph_data})
+
+    with pytest.raises(ValueError, match="same canonical entity"):
+        deserialize_graph_state(raw)
+
+
+def test_serializer_rejects_nfkc_colliding_live_node_ids():
+    graph = nx.MultiDiGraph()
+    graph.add_node("API", type="master")
+    graph.add_node("ＡＰＩ", type="entity")
+
+    with pytest.raises(ValueError, match="same canonical entity"):
+        serialize_graph_state(graph, "API", {"api": "API"})
 
 
 def test_request_failure_circuit_opens_and_success_resets_streak():
