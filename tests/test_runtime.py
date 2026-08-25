@@ -3,6 +3,7 @@ import json
 import pytest
 
 from knowledgelens.limits import (
+    MAX_API_KEY_CHARS,
     MAX_CHAT_QUERY_CHARS,
     MAX_ENTITY_LABEL_CHARS,
     MAX_EXTRACTION_FOCUS_CHARS,
@@ -27,6 +28,13 @@ def test_openai_requires_api_key_before_contacting_endpoint():
     assert provider_credential_error("OpenAI", "   ") is not None
     assert provider_credential_error("OpenAI", "sk-test") is None
     assert provider_credential_error("Ollama / local", "") is None
+
+
+def test_credentials_are_bounded_for_every_provider():
+    oversized = "k" * (MAX_API_KEY_CHARS + 1)
+    for provider in ("OpenAI", "Ollama / local", "llama.cpp / local", "Configured endpoint"):
+        assert provider_credential_error(provider, oversized) is not None
+        assert request_configuration_error(provider, oversized, "model") is not None
 
 
 def test_request_configuration_is_shared_by_build_and_chat_paths():
