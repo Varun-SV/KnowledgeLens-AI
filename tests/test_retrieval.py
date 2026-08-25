@@ -63,7 +63,7 @@ def test_mixed_direction_path_is_retrieved():
     _edge(graph, "Z", "Y", "zy", "supports")
     _edge(graph, "Z", "B", "zb", "points to")
     context = retrieve_graph_context(graph, "Compare A and B")
-    assert "[graph path]" in context
+    assert "Graph path:" in context
     assert "X --[points to]--> A" in context
     assert "Z --[points to]--> B" in context
 
@@ -89,6 +89,32 @@ def test_synthetic_overview_links_are_not_grounded_evidence():
 
     assert "KnowledgeLens" not in context
     assert "includes" not in context
+    assert "No specific source-backed graph connections" in context
+
+
+def test_legacy_aggregated_relations_are_not_grounded_evidence():
+    graph = nx.MultiDiGraph()
+    graph.add_node("Legacy Topic", type="master")
+    graph.add_node("Old Fact")
+    graph.add_edge(
+        "Legacy Topic",
+        "Old Fact",
+        key="legacy",
+        relation="claims",
+        source="",
+        legacy_sources=["old.pdf"],
+        page=None,
+        chunk_index=0,
+        evidence="Migration note only; original evidence was not preserved.",
+        confidence=None,
+        synthetic=False,
+        provenance_status="legacy-aggregated",
+    )
+
+    context = retrieve_graph_context(graph, "Legacy Topic")
+
+    assert "old.pdf" not in context
+    assert "--[claims]-->" not in context
     assert "No specific source-backed graph connections" in context
 
 
@@ -139,6 +165,29 @@ def test_master_expansion_reserves_seed_for_other_explicit_entity():
     assert len(seeds) == 5
 
 
+def test_master_is_removed_before_direct_match_limit_is_applied():
+    graph = nx.MultiDiGraph()
+    graph.add_node("Knowledge Base", type="master")
+    direct = ["Alpha", "Beta", "Gamma", "Delta", "Epsilon"]
+    for index, node in enumerate(direct):
+        _edge(graph, node, f"{node} Leaf", f"direct-{index}", "supports")
+    graph.add_edge(
+        "Knowledge Base",
+        "Master Neighbor",
+        key="synthetic-master",
+        relation="includes",
+        source="KnowledgeLens",
+        chunk_index=0,
+        synthetic=True,
+    )
+    _edge(graph, "Master Neighbor", "Master Leaf", "master-real", "supports")
+
+    query = "Knowledge Base Knowledge Base compare Alpha Beta Gamma Delta Epsilon"
+    seeds = relevant_nodes(graph, query, limit=5)
+
+    assert set(seeds) == set(direct)
+
+
 def test_generic_query_falls_back_to_evidence_bearing_node():
     graph = nx.MultiDiGraph()
     graph.add_node("Knowledge Base", type="master")
@@ -178,7 +227,7 @@ def test_context_budget_prioritizes_selected_entity_path_before_dense_neighborho
 
     context = retrieve_graph_context(graph, "Compare Alpha and Beta", max_chars=500)
 
-    assert "[graph path] Alpha -- Bridge -- Beta" in context
+    assert "Graph path: Alpha -- Bridge -- Beta" in context
     assert "Alpha --[connects]--> Bridge" in context
     assert "Bridge --[supports]--> Beta" in context
     assert len(context) <= 500
@@ -189,7 +238,7 @@ def test_path_header_is_omitted_when_no_supporting_claim_fits_budget():
     graph = nx.MultiDiGraph()
     _edge(graph, "Alpha", "Beta", "ab", "connects", evidence="supported by a source")
 
-    header = "[graph path] Alpha -- Beta"
+    header = "Graph path: Alpha -- Beta"
     context = retrieve_graph_context(graph, "Compare Alpha and Beta", max_chars=len(header))
 
     assert header not in context
