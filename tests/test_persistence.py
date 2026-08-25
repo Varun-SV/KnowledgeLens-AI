@@ -91,6 +91,33 @@ def test_serialization_round_trip_preserves_claim_provenance_source():
     assert data["evidence"] == "The source supports this relation."
 
 
+def test_serialization_round_trip_preserves_integer_and_string_edge_keys():
+    graph = nx.MultiDiGraph()
+    graph.add_node("A", type="master")
+    graph.add_node("B", type="entity")
+    common = {
+        "relation": "supports",
+        "source": "doc.md",
+        "legacy_sources": [],
+        "chunk_index": 1,
+        "page": None,
+        "evidence": "The source supports this relation.",
+        "confidence": 0.9,
+        "synthetic": False,
+        "provenance_status": None,
+    }
+    graph.add_edge("A", "B", key=1, **common)
+    graph.add_edge("A", "B", key="1", **{**common, "chunk_index": 2})
+
+    raw = serialize_graph_state(graph, "A", {"a": "A", "b": "B"})
+    loaded, master, _ = deserialize_graph_state(raw)
+
+    assert master == "A"
+    assert loaded.has_edge("A", "B", key=1)
+    assert loaded.has_edge("A", "B", key="1")
+    assert loaded.number_of_edges("A", "B") == 2
+
+
 def test_loader_accepts_legacy_links_collection_with_namespaced_v2_fields():
     graph = _valid_v2_graph()
     data = nx.node_link_data(graph, edges="links", **_NODE_LINK_FIELDS)
