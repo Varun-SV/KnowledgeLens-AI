@@ -1,8 +1,9 @@
 from __future__ import annotations
 
 import io
+from collections.abc import Iterable
 from dataclasses import dataclass
-from typing import Any, Iterable
+from typing import Any
 
 _MIB = 1024 * 1024
 
