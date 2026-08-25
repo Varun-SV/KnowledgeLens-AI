@@ -177,7 +177,13 @@ def _claim_from_mapping(
         return None
 
     normalized_overlap_prefix = _evidence_match_text(chunk.overlap_prefix)
-    evidence_from_overlap = bool(normalized_overlap_prefix) and normalized_evidence in normalized_overlap_prefix
+    source_occurrences = normalized_source_text.count(normalized_evidence)
+    overlap_occurrences = normalized_overlap_prefix.count(normalized_evidence)
+    # Dedupe only when every occurrence of the evidence in this chunk lies inside
+    # copied prefix text. If the same evidence also appears in newly introduced
+    # suffix content, its origin is ambiguous and preserving the occurrence is safer
+    # than silently erasing real location provenance.
+    evidence_from_overlap = overlap_occurrences > 0 and source_occurrences == overlap_occurrences
 
     return Claim(
         subject=ns[1],
