@@ -9,6 +9,14 @@ from typing import Any
 
 import networkx as nx
 
+from .limits import (
+    MAX_ENTITY_LABEL_CHARS,
+    MAX_EVIDENCE_CHARS,
+    MAX_PROVENANCE_STATUS_CHARS,
+    MAX_RELATION_CHARS,
+    MAX_SOURCE_ID_CHARS,
+    is_bounded_text,
+)
 from .models import Claim
 from .parsing import normalize_entity
 
@@ -35,13 +43,21 @@ def _valid_confidence(value: Any) -> bool:
 def _valid_claim_shape(data: dict[str, Any]) -> bool:
     relation = data.get("relation")
     evidence = data.get("evidence")
+    source = data.get("source")
     chunk_index = data.get("chunk_index")
     page = data.get("page")
     synthetic = data.get("synthetic")
+    provenance_status = data.get("provenance_status")
 
-    if not isinstance(relation, str) or not relation.strip():
+    if not is_bounded_text(relation, MAX_RELATION_CHARS):
         return False
-    if not isinstance(evidence, str) or not evidence.strip():
+    if not is_bounded_text(evidence, MAX_EVIDENCE_CHARS):
+        return False
+    if not is_bounded_text(source, MAX_SOURCE_ID_CHARS, allow_empty=True):
+        return False
+    if provenance_status is not None and not is_bounded_text(
+        provenance_status, MAX_PROVENANCE_STATUS_CHARS
+    ):
         return False
     if isinstance(chunk_index, bool) or not isinstance(chunk_index, int) or chunk_index < 0:
         return False
@@ -59,10 +75,12 @@ def is_auditable_claim_data(data: dict[str, Any]) -> bool:
     if data["synthetic"] or data.get("provenance_status") == "legacy-aggregated":
         return False
     source = data.get("source")
-    return isinstance(source, str) and bool(source.strip())
+    return is_bounded_text(source, MAX_SOURCE_ID_CHARS)
 
 
 def create_graph(master_concept: str) -> tuple[nx.MultiDiGraph, dict[str, str]]:
+    if not is_bounded_text(master_concept, MAX_ENTITY_LABEL_CHARS):
+        raise ValueError(f"Master concept must be 1-{MAX_ENTITY_LABEL_CHARS} characters.")
     graph = nx.MultiDiGraph()
     graph.add_node(master_concept, label=master_concept, type="master")
     return graph, {canonical_key(master_concept): master_concept}
