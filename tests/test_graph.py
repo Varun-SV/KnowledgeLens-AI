@@ -69,6 +69,30 @@ def test_claim_identity_deduplicates_case_and_nfkc_variants_after_node_resolutio
     assert {"Cache", "Latency"}.issubset(graph.nodes)
 
 
+def test_exact_same_source_claim_deduplicates_across_overlap_chunk_indices():
+    graph, node_map = create_graph("System")
+    claims = [
+        Claim("Cache", "reduces", "Latency", "doc.md", 7, evidence="Cache reduces Latency"),
+        Claim("Cache", "reduces", "Latency", "doc.md", 8, evidence="Cache reduces Latency"),
+    ]
+
+    assert add_claims(graph, node_map, claims) == 1
+    assert graph.number_of_edges() == 1
+    data = next(iter(graph.edges(data=True)))[2]
+    assert data["chunk_index"] == 7
+
+
+def test_same_claim_on_distinct_pdf_pages_keeps_independent_provenance():
+    graph, node_map = create_graph("System")
+    claims = [
+        Claim("Cache", "reduces", "Latency", "doc.pdf", 7, page=2, evidence="Cache reduces Latency"),
+        Claim("Cache", "reduces", "Latency", "doc.pdf", 8, page=3, evidence="Cache reduces Latency"),
+    ]
+
+    assert add_claims(graph, node_map, claims) == 2
+    assert graph.number_of_edges() == 2
+
+
 def test_graph_admission_rejects_malformed_direct_claims():
     graph, node_map = create_graph("System")
     malformed = [
