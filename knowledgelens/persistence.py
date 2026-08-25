@@ -8,6 +8,14 @@ from typing import Any
 import networkx as nx
 
 from .graph import canonical_key
+from .limits import (
+    MAX_ENTITY_LABEL_CHARS,
+    MAX_EVIDENCE_CHARS,
+    MAX_PROVENANCE_STATUS_CHARS,
+    MAX_RELATION_CHARS,
+    MAX_SOURCE_ID_CHARS,
+    is_bounded_text,
+)
 
 STATE_SCHEMA_VERSION = 2
 MAX_STATE_BYTES = 8 * 1024 * 1024
@@ -114,6 +122,13 @@ def _validate_serialized_complexity(graph_data: dict[str, Any]) -> None:
         raise ValueError(f"Graph state exceeds the {MAX_STATE_EDGES:,}-edge safety limit.")
 
 
+def _validate_graph_complexity(graph: nx.Graph) -> None:
+    if graph.number_of_nodes() > MAX_STATE_NODES:
+        raise ValueError(f"Graph state exceeds the {MAX_STATE_NODES:,}-node safety limit.")
+    if graph.number_of_edges() > MAX_STATE_EDGES:
+        raise ValueError(f"Graph state exceeds the {MAX_STATE_EDGES:,}-edge safety limit.")
+
+
 def _validate_state_size(raw: bytes | str) -> None:
     if isinstance(raw, bytes):
         size = len(raw)
@@ -160,8 +175,10 @@ def _node_link_graph(graph_data: dict[str, Any], schema_version: int) -> nx.Grap
 
 
 def _validate_node_ids(graph: nx.Graph) -> None:
-    if any(not isinstance(node, str) or not node.strip() for node in graph.nodes):
-        raise ValueError("Graph state node identifiers must be non-empty strings.")
+    if any(not is_bounded_text(node, MAX_ENTITY_LABEL_CHARS) for node in graph.nodes):
+        raise ValueError(
+            f"Graph state node identifiers must be non-empty strings up to {MAX_ENTITY_LABEL_CHARS} characters."
+        )
 
 
 def _validate_master(graph: nx.Graph, master_concept: str | None) -> None:
@@ -171,8 +188,10 @@ def _validate_master(graph: nx.Graph, master_concept: str | None) -> None:
             raise ValueError("An empty graph state cannot declare a master concept.")
         return
 
-    if not isinstance(master_concept, str) or not master_concept.strip():
-        raise ValueError("A non-empty graph state must declare a non-empty master_concept.")
+    if not is_bounded_text(master_concept, MAX_ENTITY_LABEL_CHARS):
+        raise ValueError(
+            f"A non-empty graph state must declare a master_concept up to {MAX_ENTITY_LABEL_CHARS} characters."
+        )
     if master_concept not in graph:
         raise ValueError("Graph state master_concept does not exist in graph_data.")
     if len(master_nodes) != 1 or master_nodes[0] != master_concept:
@@ -183,21 +202,26 @@ def _validate_v2_graph(graph: nx.Graph, master_concept: str | None) -> None:
     if not isinstance(graph, nx.MultiDiGraph):
         raise ValueError("KnowledgeLens graph state v2 must deserialize to a MultiDiGraph.")
 
+    _validate_graph_complexity(graph)
     _validate_node_ids(graph)
     _validate_master(graph, master_concept)
 
     for _subject, _obj, _key, data in graph.edges(keys=True, data=True):
         relation = data.get("relation")
-        if not isinstance(relation, str) or not relation.strip():
-            raise ValueError("Graph state v2 contains an edge without a valid relation.")
+        if not is_bounded_text(relation, MAX_RELATION_CHARS):
+            raise ValueError(
+                f"Graph state v2 relation values must be non-empty and at most {MAX_RELATION_CHARS} characters."
+            )
 
         synthetic = data.get("synthetic")
         if not isinstance(synthetic, bool):
             raise ValueError("Graph state v2 edges must declare a boolean synthetic flag.")
 
         evidence = data.get("evidence")
-        if not isinstance(evidence, str) or not evidence.strip():
-            raise ValueError("Graph state v2 contains an edge without supporting/provenance evidence.")
+        if not is_bounded_text(evidence, MAX_EVIDENCE_CHARS):
+            raise ValueError(
+                f"Graph state v2 evidence must be non-empty and at most {MAX_EVIDENCE_CHARS} characters."
+            )
 
         chunk_index = data.get("chunk_index")
         if isinstance(chunk_index, bool) or not isinstance(chunk_index, int) or chunk_index < 0:
@@ -216,19 +240,28 @@ def _validate_v2_graph(graph: nx.Graph, master_concept: str | None) -> None:
                 raise ValueError("Graph state v2 edge confidence must be null or a finite number from 0 to 1.")
 
         provenance_status = data.get("provenance_status")
-        if provenance_status is not None and not isinstance(provenance_status, str):
-            raise ValueError("Graph state v2 edge provenance_status must be a string or null.")
+        if provenance_status is not None and not is_bounded_text(
+            provenance_status, MAX_PROVENANCE_STATUS_CHARS
+        ):
+            raise ValueError(
+                "Graph state v2 edge provenance_status must be a non-empty bounded string or null."
+            )
 
         legacy_sources = data.get("legacy_sources", [])
         if not isinstance(legacy_sources, list) or any(
-            not isinstance(source, str) or not source.strip() for source in legacy_sources
+            not is_bounded_text(source, MAX_SOURCE_ID_CHARS) for source in legacy_sources
         ):
-            raise ValueError("Graph state v2 legacy_sources must be a list of non-empty strings.")
+            raise ValueError(
+                f"Graph state v2 legacy_sources must contain source identifiers up to {MAX_SOURCE_ID_CHARS} characters."
+            )
 
-        if not synthetic and provenance_status != "legacy-aggregated":
-            source = data.get("source")
-            if not isinstance(source, str) or not source.strip():
-                raise ValueError("Source-backed graph state v2 edges must contain a non-empty source.")
+        source = data.get("source", "")
+        if not is_bounded_text(source, MAX_SOURCE_ID_CHARS, allow_empty=True):
+            raise ValueError(
+                f"Graph state v2 source identifiers must be at most {MAX_SOURCE_ID_CHARS} characters."
+            )
+        if not synthetic and provenance_status != "legacy-aggregated" and not source.strip():
+            raise ValueError("Source-backed graph state v2 edges must contain a non-empty source.")
 
 
 def _serialized_graph_data(graph: nx.MultiDiGraph) -> dict[str, Any]:
@@ -242,14 +275,19 @@ def serialize_graph_state(
     master_concept: str | None,
     node_canonical_map: dict[str, str],
 ) -> str:
+    """Serialize only states that this build can subsequently deserialize."""
     _validate_v2_graph(graph, master_concept)
+    graph_data = _serialized_graph_data(graph)
+    _validate_serialized_complexity(graph_data)
     payload = {
         "schema_version": STATE_SCHEMA_VERSION,
         "master_concept": master_concept,
         "node_canonical_map": node_canonical_map,
-        "graph_data": _serialized_graph_data(graph),
+        "graph_data": graph_data,
     }
-    return json.dumps(payload, ensure_ascii=False, indent=2)
+    raw = json.dumps(payload, ensure_ascii=False, indent=2)
+    _validate_state_size(raw)
+    return raw
 
 
 def deserialize_graph_state(raw: bytes | str) -> tuple[nx.MultiDiGraph, str | None, dict[str, str]]:
@@ -285,7 +323,7 @@ def deserialize_graph_state(raw: bytes | str) -> tuple[nx.MultiDiGraph, str | No
         # workspace whose UI/retrieval disagree about which node is the master.
         _validate_master(loaded_raw, master)
         loaded = migrate_legacy_graph(loaded_raw, master_concept=master)
-        _validate_master(loaded, master)
+        _validate_v2_graph(loaded, master)
 
     node_map = state.get("node_canonical_map")
     if not isinstance(node_map, dict) or any(
