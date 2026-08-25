@@ -2,11 +2,20 @@ from pathlib import Path
 
 
 def test_extraction_prompt_requires_verbatim_source_evidence():
+    runtime_source = Path("knowledgelens/runtime.py").read_text(encoding="utf-8")
     app_source = Path("KnowledgeLens_AI.py").read_text(encoding="utf-8")
 
-    assert '"evidence":"short verbatim source excerpt"' in app_source
-    assert "Evidence MUST be a short verbatim excerpt copied from the supplied source text" in app_source
-    assert "never paraphrase or invent evidence" in app_source
+    assert '"evidence":"short verbatim source excerpt"' in runtime_source
+    assert "Evidence MUST be a short verbatim excerpt copied from source_text" in runtime_source
+    assert "never paraphrase or invent evidence" in runtime_source
+    assert "extraction_messages(chunk.citation, chunk.text, custom_focus)" in app_source
+
+
+def test_source_text_and_master_detection_use_data_only_prompt_helpers():
+    app_source = Path("KnowledgeLens_AI.py").read_text(encoding="utf-8")
+    assert "master_detection_messages(excerpts)" in app_source
+    assert "extraction_messages(chunk.citation, chunk.text, custom_focus)" in app_source
+    assert 'f"Source: {chunk.citation}\\n\\n{chunk.text}"' not in app_source
 
 
 def test_state_upload_checks_streamlit_size_before_getvalue():
@@ -33,13 +42,37 @@ def test_graph_tooltips_use_html_escape_helper():
     assert "title=safe_tooltip_text(title)" in app_source
 
 
-def test_manual_master_limit_is_wired_before_graph_creation():
+def test_visualization_budget_is_checked_before_pyvis_network_creation():
+    app_source = Path("KnowledgeLens_AI.py").read_text(encoding="utf-8")
+    helper = app_source[app_source.index("def visualize_graph") : app_source.index("def _state_upload_payload")]
+
+    guard = helper.index("render_error = visualization_limit_error")
+    network = helper.index("network = Network(")
+    assert guard < network
+    assert "st.warning(render_error)" in helper[guard:network]
+    assert "return" in helper[guard:network]
+
+
+def test_manual_master_and_extraction_focus_limits_are_wired_before_graph_creation():
     app_source = Path("KnowledgeLens_AI.py").read_text(encoding="utf-8")
 
     assert "max_chars=MAX_ENTITY_LABEL_CHARS" in app_source
-    validation = app_source.index("master_error = manual_master_concept_error(auto_detect, manual_master)")
+    assert "max_chars=MAX_EXTRACTION_FOCUS_CHARS" in app_source
+    master_validation = app_source.index("master_error = manual_master_concept_error(auto_detect, manual_master)")
+    focus_validation = app_source.index("focus_error = extraction_focus_error(custom_focus)")
     graph_creation = app_source.index("graph, node_map = create_graph(master)")
-    assert validation < graph_creation
+    assert master_validation < graph_creation
+    assert focus_validation < graph_creation
+
+
+def test_graph_capacity_failure_stops_build_before_session_commit():
+    app_source = Path("KnowledgeLens_AI.py").read_text(encoding="utf-8")
+
+    capacity_handler = app_source.index("except GraphCapacityError as exc:")
+    generic_handler = app_source.index("except Exception as exc:", capacity_handler)
+    session_commit = app_source.index("st.session_state.kg_graph = graph", capacity_handler)
+    assert capacity_handler < generic_handler < session_commit
+    assert "st.stop()" in app_source[capacity_handler:generic_handler]
 
 
 def test_state_export_failure_is_rendered_instead_of_crashing_page():
