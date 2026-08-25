@@ -31,3 +31,5 @@ jobs:
         run: python -m pytest
       - name: Compile
         run: python -m compileall -q KnowledgeLens_AI.py knowledgelens
+      - name: JavaScript syntax
+        run: node --check site/app.js
