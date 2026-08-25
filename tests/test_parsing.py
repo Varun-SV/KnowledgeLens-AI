@@ -1,4 +1,11 @@
-from knowledgelens.limits import MAX_ENTITY_LABEL_CHARS, MAX_RELATION_CHARS, MAX_SOURCE_ID_CHARS
+import json
+
+from knowledgelens.limits import (
+    MAX_CLAIMS_PER_CHUNK,
+    MAX_ENTITY_LABEL_CHARS,
+    MAX_RELATION_CHARS,
+    MAX_SOURCE_ID_CHARS,
+)
 from knowledgelens.models import DocumentChunk
 from knowledgelens.parsing import normalize_entity, parse_claims, parse_master_concept_response
 
@@ -117,6 +124,26 @@ def test_model_controlled_labels_and_sources_are_bounded():
         '[{"subject":"Alpha","relation":"supports","object":"Beta","evidence":"Alpha supports Beta"}]',
         oversized_source,
     ) == []
+
+
+def test_json_model_response_is_capped_to_bounded_claim_count():
+    chunk = DocumentChunk(source="doc.md", text="supported", chunk_index=1)
+    payload = [
+        {"subject": f"Entity{i}", "relation": "supports", "object": "Target", "evidence": "supported"}
+        for i in range(MAX_CLAIMS_PER_CHUNK + 5)
+    ]
+    claims = parse_claims(json.dumps(payload), chunk)
+    assert len(claims) == MAX_CLAIMS_PER_CHUNK
+    assert claims[-1].subject == f"Entity{MAX_CLAIMS_PER_CHUNK - 1}"
+
+
+def test_legacy_pipe_response_is_capped_to_bounded_claim_count():
+    chunk = DocumentChunk(source="doc.md", text="supported", chunk_index=1)
+    response = "\n".join(
+        f"Entity{i} | supports | Target | supported" for i in range(MAX_CLAIMS_PER_CHUNK + 5)
+    )
+    claims = parse_claims(response, chunk)
+    assert len(claims) == MAX_CLAIMS_PER_CHUNK
 
 
 def test_unicode_entity_normalization_is_preserved():
