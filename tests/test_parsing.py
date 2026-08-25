@@ -1,3 +1,4 @@
+from knowledgelens.limits import MAX_ENTITY_LABEL_CHARS, MAX_RELATION_CHARS, MAX_SOURCE_ID_CHARS
 from knowledgelens.models import DocumentChunk
 from knowledgelens.parsing import normalize_entity, parse_claims, parse_master_concept_response
 
@@ -93,6 +94,31 @@ def test_boolean_confidence_values_are_treated_as_unknown():
         assert claims[0].confidence is None
 
 
+def test_model_controlled_labels_and_sources_are_bounded():
+    chunk = DocumentChunk(source="doc.md", text="Alpha supports Beta.", chunk_index=1)
+    oversized_entity = "A" * (MAX_ENTITY_LABEL_CHARS + 1)
+    oversized_relation = "r" * (MAX_RELATION_CHARS + 1)
+
+    assert parse_claims(
+        f'[{{"subject":"{oversized_entity}","relation":"supports","object":"Beta","evidence":"Alpha supports Beta"}}]',
+        chunk,
+    ) == []
+    assert parse_claims(
+        f'[{{"subject":"Alpha","relation":"{oversized_relation}","object":"Beta","evidence":"Alpha supports Beta"}}]',
+        chunk,
+    ) == []
+
+    oversized_source = DocumentChunk(
+        source="s" * (MAX_SOURCE_ID_CHARS + 1),
+        text="Alpha supports Beta.",
+        chunk_index=1,
+    )
+    assert parse_claims(
+        '[{"subject":"Alpha","relation":"supports","object":"Beta","evidence":"Alpha supports Beta"}]',
+        oversized_source,
+    ) == []
+
+
 def test_unicode_entity_normalization_is_preserved():
     assert normalize_entity("人工知能")[0] == "人工知能"
     assert normalize_entity("Привет Мир")[0] == "привет мир"
@@ -120,6 +146,10 @@ def test_master_concept_parser_strips_common_explanatory_prefixes():
     assert parse_master_concept_response("Topic: Knowledge Graphs") == "Knowledge Graphs"
     assert parse_master_concept_response("Master concept: Distributed Systems") == "Distributed Systems"
     assert parse_master_concept_response("```text\nTopic: Retrieval Augmented Generation\n```") == "Retrieval Augmented Generation"
+
+
+def test_master_concept_parser_rejects_oversized_model_label():
+    assert parse_master_concept_response("M" * (MAX_ENTITY_LABEL_CHARS + 1)) == ""
 
 
 def test_markdown_fence_stripping_handles_large_whitespace_without_regex():
