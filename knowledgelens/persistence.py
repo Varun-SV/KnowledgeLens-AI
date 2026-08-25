@@ -73,6 +73,12 @@ def migrate_legacy_graph(graph: nx.Graph, master_concept: str | None = None) -> 
 
 
 def _node_link_graph(graph_data: dict[str, Any]) -> nx.Graph:
+    # Both supported KnowledgeLens state generations are directed. Accepting an
+    # undirected payload would force migration to invent an arbitrary edge direction
+    # from serialization order, corrupting the meaning of claims and exports.
+    if graph_data.get("directed") is not True:
+        raise ValueError("Graph state must describe a directed graph; undirected states are not supported.")
+
     # Pin the field name for new state while accepting files written by NetworkX <=3.5.
     if "edges" in graph_data:
         return nx.node_link_graph(graph_data, edges="edges")
