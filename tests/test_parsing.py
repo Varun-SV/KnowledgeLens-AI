@@ -28,12 +28,13 @@ def test_parse_json_claim_with_provenance():
     assert claim.confidence == 0.9
 
 
-def test_parse_claim_propagates_forced_overlap_provenance():
+def test_parse_claim_marks_evidence_inside_forced_overlap_prefix():
     chunk = DocumentChunk(
         source="notes.md",
-        text="Cache reduces latency.",
+        text="Cache reduces latency. New suffix text.",
         chunk_index=8,
         overlap_from_previous=True,
+        overlap_prefix="Cache reduces latency.",
     )
     claims = parse_claims(
         '[{"subject":"Cache","relation":"reduces","object":"Latency","evidence":"Cache reduces latency"}]',
@@ -41,6 +42,22 @@ def test_parse_claim_propagates_forced_overlap_provenance():
     )
     assert len(claims) == 1
     assert claims[0].overlap_from_previous is True
+
+
+def test_parse_claim_in_new_suffix_is_not_marked_as_overlap_derived():
+    chunk = DocumentChunk(
+        source="notes.md",
+        text="Copied prefix text. Cache reduces latency in the new suffix.",
+        chunk_index=8,
+        overlap_from_previous=True,
+        overlap_prefix="Copied prefix text.",
+    )
+    claims = parse_claims(
+        '[{"subject":"Cache","relation":"reduces","object":"Latency","evidence":"Cache reduces latency in the new suffix"}]',
+        chunk,
+    )
+    assert len(claims) == 1
+    assert claims[0].overlap_from_previous is False
 
 
 def test_parse_legacy_pipe_format():
