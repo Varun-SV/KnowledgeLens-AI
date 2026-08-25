@@ -3,7 +3,8 @@ import math
 import networkx as nx
 import pytest
 
-from knowledgelens.graph import add_claims, add_master_links, create_graph, graph_to_export
+import knowledgelens.graph as graph_module
+from knowledgelens.graph import GraphCapacityError, add_claims, add_master_links, create_graph, graph_to_export
 from knowledgelens.limits import MAX_ENTITY_LABEL_CHARS, MAX_EVIDENCE_CHARS, MAX_RELATION_CHARS, MAX_SOURCE_ID_CHARS
 from knowledgelens.models import Claim
 
@@ -126,6 +127,32 @@ def test_graph_admission_rejects_oversized_direct_claim_fields():
 
     assert add_claims(graph, node_map, oversized) == 0
     assert graph.number_of_edges() == 0
+
+
+def test_node_capacity_fails_before_partial_graph_mutation(monkeypatch):
+    monkeypatch.setattr(graph_module, "MAX_GRAPH_NODES", 2)
+    graph, node_map = create_graph("System")
+
+    assert add_claims(graph, node_map, [_claim("A", "supports", "System", "doc.md", 1)]) == 1
+    with pytest.raises(GraphCapacityError, match="nodes"):
+        add_claims(graph, node_map, [_claim("B", "supports", "System", "doc.md", 2)])
+
+    assert set(graph.nodes) == {"System", "A"}
+    assert "b" not in node_map
+    assert graph.number_of_edges() == 1
+
+
+def test_edge_capacity_fails_before_adding_new_endpoint(monkeypatch):
+    monkeypatch.setattr(graph_module, "MAX_GRAPH_EDGES", 1)
+    graph, node_map = create_graph("System")
+
+    assert add_claims(graph, node_map, [_claim("A", "supports", "System", "doc.md", 1)]) == 1
+    with pytest.raises(GraphCapacityError, match="edges"):
+        add_claims(graph, node_map, [_claim("A", "supports", "B", "doc.md", 2)])
+
+    assert "B" not in graph
+    assert "b" not in node_map
+    assert graph.number_of_edges() == 1
 
 
 def test_synthetic_master_links_do_not_count_as_sources():
