@@ -43,11 +43,21 @@ def test_serialization_pins_edges_field():
     assert "links" not in payload["graph_data"]
 
 
-def test_loader_accepts_legacy_links_field():
+def test_loader_accepts_legacy_links_field_for_v2_networkx_compatibility():
     graph = nx.MultiDiGraph()
     graph.add_node("A", type="master")
     graph.add_node("B")
-    graph.add_edge("A", "B", relation="r", source="s", chunk_index=1, synthetic=False)
+    graph.add_edge(
+        "A",
+        "B",
+        relation="r",
+        source="s",
+        chunk_index=1,
+        page=None,
+        evidence="supported",
+        confidence=0.9,
+        synthetic=False,
+    )
     data = nx.node_link_data(graph, edges="links")
     raw = json.dumps({"schema_version": 2, "master_concept": "A", "graph_data": data})
     loaded, master, _ = deserialize_graph_state(raw)
@@ -82,6 +92,90 @@ def test_loader_rejects_undirected_graph_state():
     )
     with pytest.raises(ValueError, match="directed graph"):
         deserialize_graph_state(raw)
+
+
+def test_loader_rejects_wrong_multigraph_shape_for_each_schema():
+    v1_multigraph = json.dumps(
+        {
+            "schema_version": 1,
+            "master_concept": "A",
+            "graph_data": {"directed": True, "multigraph": True, "nodes": [{"id": "A"}], "links": []},
+        }
+    )
+    v2_simple = json.dumps(
+        {
+            "schema_version": 2,
+            "master_concept": "A",
+            "graph_data": {"directed": True, "multigraph": False, "nodes": [{"id": "A"}], "edges": []},
+        }
+    )
+    with pytest.raises(ValueError, match="v1.*non-multigraph"):
+        deserialize_graph_state(v1_multigraph)
+    with pytest.raises(ValueError, match="v2.*MultiDiGraph"):
+        deserialize_graph_state(v2_simple)
+
+
+def test_loader_rejects_v2_edges_that_bypass_source_backed_invariants():
+    raw = json.dumps(
+        {
+            "schema_version": 2,
+            "master_concept": "A",
+            "graph_data": {
+                "directed": True,
+                "multigraph": True,
+                "nodes": [{"id": "A", "type": "master"}, {"id": "B"}],
+                "edges": [
+                    {
+                        "source": "A",
+                        "target": "B",
+                        "key": "bad",
+                        "relation": "supports",
+                        "chunk_index": 1,
+                        "page": None,
+                        "confidence": 0.9,
+                        "synthetic": False,
+                    }
+                ],
+            },
+        }
+    )
+    with pytest.raises(ValueError, match="evidence"):
+        deserialize_graph_state(raw)
+
+
+def test_loader_rejects_non_string_node_ids_in_v2():
+    raw = json.dumps(
+        {
+            "schema_version": 2,
+            "master_concept": None,
+            "graph_data": {"directed": True, "multigraph": True, "nodes": [{"id": 7}], "edges": []},
+        }
+    )
+    with pytest.raises(ValueError, match="node identifiers"):
+        deserialize_graph_state(raw)
+
+
+def test_migrated_v1_state_can_be_reserialized_and_loaded_as_v2():
+    graph = nx.DiGraph()
+    graph.add_node("A", type="master")
+    graph.add_node("B", type="entity")
+    graph.add_edge("A", "B", relations=["supports"], sources=["doc.md"])
+    v1 = json.dumps(
+        {
+            "schema_version": 1,
+            "master_concept": "A",
+            "graph_data": nx.node_link_data(graph, edges="links"),
+        }
+    )
+
+    migrated, master, node_map = deserialize_graph_state(v1)
+    v2 = serialize_graph_state(migrated, master, node_map)
+    reloaded, reloaded_master, _ = deserialize_graph_state(v2)
+
+    assert reloaded_master == "A"
+    assert reloaded.number_of_edges() == 1
+    data = next(iter(reloaded.edges(data=True)))[2]
+    assert data["provenance_status"] == "legacy-aggregated"
 
 
 def test_loader_rejects_newer_schema_versions():
