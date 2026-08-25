@@ -4,6 +4,7 @@ import networkx as nx
 import pytest
 
 import knowledgelens.persistence as persistence
+from knowledgelens.limits import MAX_GRAPH_EDGES, MAX_GRAPH_NODES
 
 
 def _small_valid_graph() -> nx.MultiDiGraph:
@@ -25,6 +26,11 @@ def _small_valid_graph() -> nx.MultiDiGraph:
         provenance_status=None,
     )
     return graph
+
+
+def test_persistence_complexity_envelope_matches_live_graph_envelope():
+    assert persistence.MAX_STATE_NODES == MAX_GRAPH_NODES
+    assert persistence.MAX_STATE_EDGES == MAX_GRAPH_EDGES
 
 
 def test_oversized_state_is_rejected_before_json_decode(monkeypatch):
