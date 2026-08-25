@@ -23,6 +23,7 @@ from knowledgelens.graph import (
 from knowledgelens.http_client import PinnedRequestError, post_json_pinned
 from knowledgelens.ingestion import prepare_chunks
 from knowledgelens.limits import (
+    MAX_API_KEY_CHARS,
     MAX_CHAT_QUERY_CHARS,
     MAX_ENTITY_LABEL_CHARS,
     MAX_EXTRACTION_FOCUS_CHARS,
@@ -31,7 +32,7 @@ from knowledgelens.limits import (
 from knowledgelens.models import DocumentChunk
 from knowledgelens.parsing import parse_claims, parse_master_concept_response
 from knowledgelens.persistence import MAX_STATE_BYTES, deserialize_graph_state, serialize_graph_state
-from knowledgelens.presentation import safe_tooltip_text, visualization_limit_error
+from knowledgelens.presentation import parallel_edge_smooth, safe_tooltip_text, visualization_limit_error
 from knowledgelens.retrieval import retrieve_graph_context
 from knowledgelens.runtime import (
     chat_query_error,
@@ -188,17 +189,6 @@ def generate_master_relations(
     return links
 
 
-def _parallel_edge_smooth(index: int, total: int) -> dict[str, object]:
-    if total <= 1:
-        return {"enabled": True, "type": "continuous"}
-    rank = index // 2
-    return {
-        "enabled": True,
-        "type": "curvedCW" if index % 2 == 0 else "curvedCCW",
-        "roundness": min(0.12 + rank * 0.08, 0.48),
-    }
-
-
 def visualize_graph(graph: nx.MultiDiGraph, height: int = 760) -> None:
     if graph.number_of_nodes() == 0:
         st.info("The graph is empty.")
@@ -270,7 +260,7 @@ def visualize_graph(graph: nx.MultiDiGraph, height: int = 760) -> None:
             title=safe_tooltip_text(title),
             color="rgba(126, 145, 180, 0.42)",
             arrows="to",
-            smooth=_parallel_edge_smooth(edge_index, edge_totals[pair]),
+            smooth=parallel_edge_smooth(edge_index, edge_totals[pair]),
         )
 
     network.set_options(
@@ -387,6 +377,7 @@ with st.sidebar:
         "API key",
         type="password",
         key=f"api_key_{provider_key}",
+        max_chars=MAX_API_KEY_CHARS,
         help="Required for OpenAI; optional for local/configured endpoints. Credentials are isolated per provider and never written to graph exports.",
     )
     default_model = "llama3.1" if provider != "OpenAI" else "gpt-4o-mini"
