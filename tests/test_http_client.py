@@ -3,6 +3,7 @@ import ipaddress
 import pytest
 
 from knowledgelens import http_client
+from knowledgelens.limits import MAX_REQUEST_HEADERS_BYTES
 from knowledgelens.security import ValidatedEndpoint
 
 
@@ -74,3 +75,24 @@ def test_oversized_request_is_rejected_before_opening_connection(monkeypatch):
 
     with pytest.raises(http_client.PinnedRequestError, match="request exceeded"):
         http_client.post_json_pinned(_endpoint(), payload)
+
+
+def test_oversized_or_multiline_headers_are_rejected_before_connection(monkeypatch):
+    def must_not_connect(*_args, **_kwargs):
+        raise AssertionError("pool must not be constructed for unsafe headers")
+
+    monkeypatch.setattr(http_client, "_pool_for", must_not_connect)
+
+    with pytest.raises(http_client.PinnedRequestError, match="headers exceeded"):
+        http_client.post_json_pinned(
+            _endpoint(),
+            {"model": "test"},
+            {"Authorization": "x" * MAX_REQUEST_HEADERS_BYTES},
+        )
+
+    with pytest.raises(http_client.PinnedRequestError, match="line breaks"):
+        http_client.post_json_pinned(
+            _endpoint(),
+            {"model": "test"},
+            {"Authorization": "Bearer safe\r\nX-Evil: injected"},
+        )
