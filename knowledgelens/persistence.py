@@ -10,6 +10,9 @@ import networkx as nx
 from .graph import canonical_key
 
 STATE_SCHEMA_VERSION = 2
+MAX_STATE_BYTES = 8 * 1024 * 1024
+MAX_STATE_NODES = 10_000
+MAX_STATE_EDGES = 25_000
 _NODE_LINK_META = "_knowledgelens_node_link_fields"
 _NODE_LINK_FIELDS = {
     "source": "__kl_from",
@@ -92,6 +95,38 @@ def _validate_graph_data_shape(graph_data: dict[str, Any], schema_version: int) 
         raise ValueError("KnowledgeLens graph state v2 must contain a directed MultiDiGraph.")
 
 
+def _validate_serialized_complexity(graph_data: dict[str, Any]) -> None:
+    """Reject oversized graph collections before NetworkX materializes the graph."""
+    nodes = graph_data.get("nodes")
+    if not isinstance(nodes, list):
+        raise ValueError("Graph state must contain a node collection.")
+
+    edge_field = "edges" if "edges" in graph_data else "links" if "links" in graph_data else None
+    if edge_field is None:
+        raise ValueError("Graph state is missing a supported edge collection ('edges' or legacy 'links').")
+    edges = graph_data.get(edge_field)
+    if not isinstance(edges, list):
+        raise ValueError("Graph state edge collection must be a list.")
+
+    if len(nodes) > MAX_STATE_NODES:
+        raise ValueError(f"Graph state exceeds the {MAX_STATE_NODES:,}-node safety limit.")
+    if len(edges) > MAX_STATE_EDGES:
+        raise ValueError(f"Graph state exceeds the {MAX_STATE_EDGES:,}-edge safety limit.")
+
+
+def _validate_state_size(raw: bytes | str) -> None:
+    if isinstance(raw, bytes):
+        size = len(raw)
+    else:
+        # UTF-8 uses at least one byte per code point. Reject obvious oversize
+        # strings before allocating another encoded copy, then verify exact bytes.
+        if len(raw) > MAX_STATE_BYTES:
+            raise ValueError(f"Graph state exceeds the {MAX_STATE_BYTES // (1024 * 1024)} MiB safety limit.")
+        size = len(raw.encode("utf-8"))
+    if size > MAX_STATE_BYTES:
+        raise ValueError(f"Graph state exceeds the {MAX_STATE_BYTES // (1024 * 1024)} MiB safety limit.")
+
+
 def _node_link_kwargs(graph_data: dict[str, Any], edge_field: str) -> tuple[dict[str, Any], dict[str, str]]:
     """Return sanitized node-link data and the field mapping needed to deserialize it."""
     payload = dict(graph_data)
@@ -111,6 +146,7 @@ def _node_link_kwargs(graph_data: dict[str, Any], edge_field: str) -> tuple[dict
 
 def _node_link_graph(graph_data: dict[str, Any], schema_version: int) -> nx.Graph:
     _validate_graph_data_shape(graph_data, schema_version)
+    _validate_serialized_complexity(graph_data)
 
     # Pin the edge collection for new state while accepting the NetworkX <=3.5
     # `links` collection. Endpoint/name/key fields are separately namespaced so
@@ -119,10 +155,8 @@ def _node_link_graph(graph_data: dict[str, Any], schema_version: int) -> nx.Grap
     if "edges" in graph_data:
         payload, kwargs = _node_link_kwargs(graph_data, "edges")
         return nx.node_link_graph(payload, **kwargs)
-    if "links" in graph_data:
-        payload, kwargs = _node_link_kwargs(graph_data, "links")
-        return nx.node_link_graph(payload, **kwargs)
-    raise ValueError("Graph state is missing a supported edge collection ('edges' or legacy 'links').")
+    payload, kwargs = _node_link_kwargs(graph_data, "links")
+    return nx.node_link_graph(payload, **kwargs)
 
 
 def _validate_node_ids(graph: nx.Graph) -> None:
@@ -219,6 +253,7 @@ def serialize_graph_state(
 
 
 def deserialize_graph_state(raw: bytes | str) -> tuple[nx.MultiDiGraph, str | None, dict[str, str]]:
+    _validate_state_size(raw)
     if isinstance(raw, bytes):
         raw = raw.decode("utf-8")
     state = json.loads(raw)
