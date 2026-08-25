@@ -12,18 +12,34 @@ import streamlit as st
 import streamlit.components.v1 as components
 from pyvis.network import Network
 
-from knowledgelens.graph import add_claims, add_master_links, create_graph, graph_to_export, top_entities
+from knowledgelens.graph import (
+    GraphCapacityError,
+    add_claims,
+    add_master_links,
+    create_graph,
+    graph_to_export,
+    top_entities,
+)
 from knowledgelens.http_client import PinnedRequestError, post_json_pinned
 from knowledgelens.ingestion import prepare_chunks
-from knowledgelens.limits import MAX_ENTITY_LABEL_CHARS
+from knowledgelens.limits import (
+    MAX_CHAT_QUERY_CHARS,
+    MAX_ENTITY_LABEL_CHARS,
+    MAX_EXTRACTION_FOCUS_CHARS,
+    MAX_MODEL_NAME_CHARS,
+)
 from knowledgelens.models import DocumentChunk
 from knowledgelens.parsing import parse_claims, parse_master_concept_response
 from knowledgelens.persistence import MAX_STATE_BYTES, deserialize_graph_state, serialize_graph_state
-from knowledgelens.presentation import safe_tooltip_text
+from knowledgelens.presentation import safe_tooltip_text, visualization_limit_error
 from knowledgelens.retrieval import retrieve_graph_context
 from knowledgelens.runtime import (
+    chat_query_error,
+    extraction_focus_error,
+    extraction_messages,
     grounded_chat_messages,
     manual_master_concept_error,
+    master_detection_messages,
     no_claims_build_error,
     provider_state_key,
     request_configuration_error,
@@ -95,25 +111,26 @@ def detect_master_concept(
     chunks: list[DocumentChunk],
     temperature: float,
 ) -> str:
-    samples: list[str] = []
+    excerpts: list[dict[str, str]] = []
     per_source: dict[str, int] = {}
+    sampled_chars = 0
     for chunk in chunks:
         if per_source.get(chunk.source, 0) >= 2:
             continue
         per_source[chunk.source] = per_source.get(chunk.source, 0) + 1
-        samples.append(f"--- {chunk.citation} ---\n{chunk.text[:1200]}")
-        if sum(map(len, samples)) > 7000:
+        sample = chunk.text[:1200]
+        excerpts.append({"source": chunk.citation, "text": sample})
+        sampled_chars += len(sample)
+        if sampled_chars > 7000:
             break
 
+    system_prompt, user_prompt = master_detection_messages(excerpts)
     response = call_llm_api(
         base_url,
         api_key,
         model,
-        (
-            "Identify the single central concept shared by the supplied document excerpts. "
-            "Return only a precise 2-5 word noun phrase. No explanation, punctuation, or prefix."
-        ),
-        "\n\n".join(samples),
+        system_prompt,
+        user_prompt,
         temperature,
     )
     concept = parse_master_concept_response(response)
@@ -130,26 +147,13 @@ def extract_chunk_claims(
     temperature: float,
     custom_focus: str,
 ):
-    system_prompt = """You extract auditable knowledge-graph claims from source text.
-Return ONLY valid JSON, ideally an array. Each item must use this schema:
-{"subject":"...","relation":"...","object":"...","evidence":"short verbatim source excerpt","confidence":0.0}
-Rules:
-- Extract only claims supported by the supplied text.
-- Keep entities specific and reusable across documents.
-- Use concise relation phrases.
-- Evidence MUST be a short verbatim excerpt copied from the supplied source text; never paraphrase or invent evidence.
-- Confidence must be 0 to 1.
-- Do not emit markdown fences or commentary.
-"""
-    if custom_focus.strip():
-        system_prompt += f"\nExtraction focus supplied by the user: {custom_focus.strip()}\n"
-
+    system_prompt, user_prompt = extraction_messages(chunk.citation, chunk.text, custom_focus)
     response = call_llm_api(
         base_url,
         api_key,
         model,
         system_prompt,
-        f"Source: {chunk.citation}\n\n{chunk.text}",
+        user_prompt,
         temperature,
     )
     return parse_claims(response, chunk)
@@ -198,6 +202,11 @@ def _parallel_edge_smooth(index: int, total: int) -> dict[str, object]:
 def visualize_graph(graph: nx.MultiDiGraph, height: int = 760) -> None:
     if graph.number_of_nodes() == 0:
         st.info("The graph is empty.")
+        return
+
+    render_error = visualization_limit_error(graph.number_of_nodes(), graph.number_of_edges())
+    if render_error:
+        st.warning(render_error)
         return
 
     network = Network(
@@ -381,7 +390,12 @@ with st.sidebar:
         help="Required for OpenAI; optional for local/configured endpoints. Credentials are isolated per provider and never written to graph exports.",
     )
     default_model = "llama3.1" if provider != "OpenAI" else "gpt-4o-mini"
-    model_name = st.text_input("Model", value=default_model, key=f"model_{provider_key}")
+    model_name = st.text_input(
+        "Model",
+        value=default_model,
+        key=f"model_{provider_key}",
+        max_chars=MAX_MODEL_NAME_CHARS,
+    )
     temperature = st.slider("Temperature", 0.0, 1.0, 0.1, 0.05)
 
     try:
@@ -408,6 +422,7 @@ with st.sidebar:
     custom_focus = st.text_area(
         "Optional extraction focus",
         placeholder="Example: prioritize APIs, dependencies, failure modes, and ownership.",
+        max_chars=MAX_EXTRACTION_FOCUS_CHARS,
     )
 
     st.divider()
@@ -478,6 +493,10 @@ if st.button("Build evidence graph", type="primary", use_container_width=True):
     if master_error:
         st.error(master_error)
         st.stop()
+    focus_error = extraction_focus_error(custom_focus)
+    if focus_error:
+        st.error(focus_error)
+        st.stop()
     try:
         validate_endpoint(base_url)
     except EndpointPolicyError as exc:
@@ -516,6 +535,11 @@ if st.button("Build evidence graph", type="primary", use_container_width=True):
         try:
             claims = extract_chunk_claims(base_url, api_key, model_name, chunk, temperature, custom_focus)
             add_claims(graph, node_map, claims)
+        except GraphCapacityError as exc:
+            status.empty()
+            progress.empty()
+            st.error(str(exc))
+            st.stop()
         except Exception as exc:
             failures += 1
             st.warning(f"Skipped {chunk.citation}: {str(exc)[:180]}")
@@ -527,7 +551,10 @@ if st.button("Build evidence graph", type="primary", use_container_width=True):
             links = generate_master_relations(base_url, api_key, model_name, master, candidates, temperature)
         except Exception:
             links = [(node, "relates to") for node in candidates]
-        add_master_links(graph, node_map, master, links)
+        try:
+            add_master_links(graph, node_map, master, links)
+        except GraphCapacityError as exc:
+            st.warning(f"Overview topology was capped by the graph safety envelope: {exc}")
 
     build_stats = graph_to_export(graph)["stats"]
     status.empty()
@@ -628,11 +655,17 @@ if st.session_state.processing_complete or st.session_state.kg_graph.number_of_n
     st.subheader("Ask the graph")
     st.caption("Answers are constrained to retrieved source-backed claims and their citations.")
 
-    user_query = st.chat_input("How are these concepts connected? What evidence supports this claim?")
+    user_query = st.chat_input(
+        "How are these concepts connected? What evidence supports this claim?",
+        max_chars=MAX_CHAT_QUERY_CHARS,
+    )
     if user_query:
         request_error = request_configuration_error(provider, api_key, model_name)
+        query_error = chat_query_error(user_query)
         if request_error:
             st.error(request_error)
+        elif query_error:
+            st.error(query_error)
         else:
             st.session_state.chat_history.append({"role": "user", "content": user_query})
             context = retrieve_graph_context(graph, user_query)
