@@ -72,11 +72,12 @@ def test_synthetic_master_links_do_not_inflate_claim_totals():
 
     assert graph.number_of_edges() == 3
     assert export["stats"]["claims"] == 1
+    assert export["stats"]["legacy_claims"] == 0
     assert export["stats"]["topology_edges"] == 2
     assert export["stats"]["edges_total"] == 3
 
 
-def test_migrated_legacy_sources_remain_visible_in_source_totals():
+def test_migrated_legacy_sources_remain_visible_but_not_counted_as_auditable_claims():
     graph = nx.MultiDiGraph()
     graph.add_node("A", type="master")
     graph.add_node("B", type="entity")
@@ -97,5 +98,7 @@ def test_migrated_legacy_sources_remain_visible_in_source_totals():
 
     export = graph_to_export(graph)
 
+    assert export["stats"]["claims"] == 0
+    assert export["stats"]["legacy_claims"] == 1
     assert export["stats"]["sources"] == 2
     assert export["sources"] == {"notes.md": 1, "paper.pdf": 1}
