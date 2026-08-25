@@ -57,10 +57,16 @@ def _split_oversized(text: str, max_chars: int, overlap: int) -> Iterable[str]:
     start = 0
     while start < len(text):
         end = min(len(text), start + max_chars)
+        safe_boundary = False
         if end < len(text):
-            boundary = max(text.rfind("\n", start, end), text.rfind(". ", start, end))
+            newline_boundary = text.rfind("\n", start, end)
+            sentence_boundary = text.rfind(". ", start, end)
+            boundary = max(newline_boundary, sentence_boundary)
             if boundary > start + max_chars // 2:
+                # The piece ends at a semantic boundary, so copying overlap would
+                # repeat already-complete lines/sentences into the next LLM request.
                 end = boundary + 1
+                safe_boundary = True
 
         piece = text[start:end].strip("\n")
         if piece:
@@ -68,6 +74,13 @@ def _split_oversized(text: str, max_chars: int, overlap: int) -> Iterable[str]:
         if end >= len(text):
             break
 
+        if safe_boundary:
+            start = end
+            while start < len(text) and text[start].isspace():
+                start += 1
+            continue
+
+        # Only retain overlap when we truly had to cut mid-content.
         next_start = max(start + 1, end - overlap)
         newline = text.find("\n", next_start, end)
         start = newline + 1 if newline != -1 else next_start
