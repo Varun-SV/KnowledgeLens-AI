@@ -4,6 +4,7 @@ from difflib import SequenceMatcher
 
 import networkx as nx
 
+from .graph import is_auditable_claim_data
 from .parsing import canonicalize_label
 
 _RETRIEVAL_STOPWORDS = frozenset(
@@ -77,7 +78,7 @@ def score_node(query: str, node: str) -> float:
 
 
 def _is_evidentiary(data: dict) -> bool:
-    return not bool(data.get("synthetic", False))
+    return is_auditable_claim_data(data)
 
 
 def _evidentiary_graph(graph: nx.MultiDiGraph) -> nx.Graph:
@@ -118,14 +119,14 @@ def relevant_nodes(graph: nx.MultiDiGraph, query: str, limit: int = 5) -> list[s
         key=lambda item: item[0],
         reverse=True,
     )
-    selected = [node for score, node in ranked if score >= 0.6][:limit]
+    selected = [node for score, node in ranked if score >= 0.6]
     evidence_graph = _evidentiary_graph(graph)
 
     if selected:
-        # Explicitly matched non-master entities get reserved seed slots first.
-        # Topology-only masters may then spend only the remaining budget on their
-        # synthetic neighbors, so a broad master expansion cannot evict another
-        # entity the user named in the same query.
+        # Reserve the seed budget for directly matched evidence-bearing entities
+        # before topology-only master expansion. Do not truncate the ranked matches
+        # until after masters have been separated, otherwise a master can consume a
+        # slot and push a lower-ranked explicit entity out before reservation occurs.
         protected: list[str] = []
         topology_only_masters: list[str] = []
         for node in selected:
@@ -140,7 +141,7 @@ def relevant_nodes(graph: nx.MultiDiGraph, query: str, limit: int = 5) -> list[s
         for master in topology_only_masters:
             if len(expanded) >= limit:
                 break
-            neighbors = _master_evidence_neighbors(graph, master, evidence_graph, limit)
+            neighbors = _master_evidence_neighbors(graph, master, evidence_graph, limit - len(expanded))
             for neighbor in neighbors:
                 if neighbor not in expanded:
                     expanded.append(neighbor)
@@ -238,11 +239,11 @@ def retrieve_graph_context(graph: nx.MultiDiGraph, query: str, max_chars: int = 
                 if not 1 < len(path) <= 6:
                     continue
 
-                # A path header is topology metadata, not evidence. Only emit it when
-                # the budget can also fit at least one source-backed claim for every
-                # hop, so a bare `[graph path]` line can never masquerade as citable
-                # evidence when the context window is nearly exhausted.
-                path_line = f"[graph path] {' -- '.join(map(str, path))}"
+                # A path header is topology metadata, not a citation. It deliberately
+                # avoids bracket syntax so the answering model cannot confuse it with
+                # source/location claim citations. Emit it only when at least one
+                # source-backed claim for every hop also fits atomically.
+                path_line = f"Graph path: {' -- '.join(map(str, path))}"
                 required_claims: list[tuple[tuple[str, str, str], str]] = []
                 path_is_supported = True
                 for left, right in zip(path, path[1:], strict=False):
