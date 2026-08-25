@@ -187,6 +187,7 @@ def _claim_from_mapping(
         page=chunk.page,
         evidence=evidence,
         confidence=_coerce_confidence(item.get("confidence")),
+        overlap_from_previous=chunk.overlap_from_previous,
     )
 
 
