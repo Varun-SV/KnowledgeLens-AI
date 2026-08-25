@@ -18,6 +18,26 @@ def test_chunking_preserves_line_structure_and_indentation():
     assert "print('hello')\n  indented = True" in joined
 
 
+def test_oversized_newline_split_preserves_next_line_indentation():
+    source = (
+        "def configure():\n"
+        "    alpha = '" + ("x" * 55) + "'\n"
+        "    nested_call(\n"
+        "        first_argument,\n"
+        "        second_argument,\n"
+        "    )\n"
+        "    return alpha"
+    )
+    chunks = chunk_section(source, max_chars=90, overlap=25)
+    joined = "\n".join(chunks)
+
+    assert len(chunks) >= 2
+    assert "    nested_call(" in joined
+    assert "        first_argument," in joined
+    assert "        second_argument," in joined
+    assert "    return alpha" in joined
+
+
 def test_safe_block_boundaries_do_not_repeat_overlap_text():
     first = "Alpha fully supports Beta."
     second = "Gamma independently supports Delta."
