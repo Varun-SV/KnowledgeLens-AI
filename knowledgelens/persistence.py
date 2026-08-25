@@ -245,7 +245,12 @@ def deserialize_graph_state(raw: bytes | str) -> tuple[nx.MultiDiGraph, str | No
         loaded = loaded_raw
     else:
         _validate_node_ids(loaded_raw)
+        # Main-branch v1 exports always recorded one master node plus the matching
+        # `master_concept`. Reject malformed legacy states rather than returning a
+        # workspace whose UI/retrieval disagree about which node is the master.
+        _validate_master(loaded_raw, master)
         loaded = migrate_legacy_graph(loaded_raw, master_concept=master)
+        _validate_master(loaded, master)
 
     node_map = state.get("node_canonical_map")
     if not isinstance(node_map, dict) or any(
