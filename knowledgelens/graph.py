@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 import hashlib
+import math
 from collections import defaultdict
+from numbers import Real
 from typing import Any
 
 import networkx as nx
@@ -15,11 +17,43 @@ def canonical_key(label: str) -> str:
     return normalized[0] if normalized else label.strip().casefold()
 
 
-def is_auditable_claim_data(data: dict[str, Any]) -> bool:
-    """Return whether an edge has source-backed provenance safe for grounded use."""
-    if bool(data.get("synthetic", False)):
+def _valid_confidence(value: Any) -> bool:
+    if value is None:
+        return True
+    if isinstance(value, bool) or not isinstance(value, Real):
         return False
-    return data.get("provenance_status") != "legacy-aggregated"
+    numeric = float(value)
+    return math.isfinite(numeric) and 0 <= numeric <= 1
+
+
+def _valid_claim_shape(data: dict[str, Any]) -> bool:
+    relation = data.get("relation")
+    evidence = data.get("evidence")
+    chunk_index = data.get("chunk_index")
+    page = data.get("page")
+    synthetic = data.get("synthetic")
+
+    if not isinstance(relation, str) or not relation.strip():
+        return False
+    if not isinstance(evidence, str) or not evidence.strip():
+        return False
+    if isinstance(chunk_index, bool) or not isinstance(chunk_index, int) or chunk_index < 0:
+        return False
+    if page is not None and (isinstance(page, bool) or not isinstance(page, int) or page < 1):
+        return False
+    if not isinstance(synthetic, bool) or not _valid_confidence(data.get("confidence")):
+        return False
+    return True
+
+
+def is_auditable_claim_data(data: dict[str, Any]) -> bool:
+    """Return whether an edge has complete source-backed provenance safe for grounded use."""
+    if not _valid_claim_shape(data):
+        return False
+    if data["synthetic"] or data.get("provenance_status") == "legacy-aggregated":
+        return False
+    source = data.get("source")
+    return isinstance(source, str) and bool(source.strip())
 
 
 def create_graph(master_concept: str) -> tuple[nx.MultiDiGraph, dict[str, str]]:
@@ -65,6 +99,23 @@ def _claim_key(claim: Claim) -> str:
     return hashlib.sha1(raw.encode("utf-8")).hexdigest()[:16]
 
 
+def _claim_edge_data(claim: Claim) -> dict[str, Any] | None:
+    data: dict[str, Any] = {
+        "relation": claim.relation,
+        "source": claim.source,
+        "page": claim.page,
+        "chunk_index": claim.chunk_index,
+        "evidence": claim.evidence,
+        "confidence": claim.confidence,
+        "synthetic": claim.synthetic,
+    }
+    if not _valid_claim_shape(data):
+        return None
+    if not claim.synthetic and not is_auditable_claim_data(data):
+        return None
+    return data
+
+
 def add_claims(
     graph: nx.MultiDiGraph,
     node_map: dict[str, str],
@@ -72,6 +123,10 @@ def add_claims(
 ) -> int:
     added = 0
     for claim in claims:
+        edge_data = _claim_edge_data(claim)
+        if edge_data is None:
+            continue
+
         subject = get_or_create_node(graph, node_map, claim.subject)
         obj = get_or_create_node(graph, node_map, claim.object)
         if not subject or not obj:
@@ -80,18 +135,7 @@ def add_claims(
         key = _claim_key(claim)
         if graph.has_edge(subject, obj, key=key):
             continue
-        graph.add_edge(
-            subject,
-            obj,
-            key=key,
-            relation=claim.relation,
-            source=claim.source,
-            page=claim.page,
-            chunk_index=claim.chunk_index,
-            evidence=claim.evidence,
-            confidence=claim.confidence,
-            synthetic=claim.synthetic,
-        )
+        graph.add_edge(subject, obj, key=key, **edge_data)
         added += 1
     return added
 
