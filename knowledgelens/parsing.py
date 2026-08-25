@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import math
 import unicodedata
 from collections.abc import Iterable
 from typing import Any
@@ -81,6 +82,19 @@ def normalize_entity(raw: Any) -> tuple[str, str] | None:
     return canonical, display
 
 
+def normalize_relation(raw: Any) -> tuple[str, str] | None:
+    """Normalize a predicate without applying entity-only stopword rejection."""
+    if raw is None:
+        return None
+    display = " ".join(str(raw).strip().split())
+    if not display:
+        return None
+    canonical = canonicalize_label(display)
+    if not canonical:
+        return None
+    return canonical, display
+
+
 def _strip_master_concept_prefix(concept: str) -> str:
     folded = concept.casefold()
     for prefix in _MASTER_CONCEPT_PREFIXES:
@@ -115,9 +129,13 @@ def _coerce_confidence(value: Any) -> float | None:
         numeric = float(value)
     except (TypeError, ValueError):
         return None
+    if not math.isfinite(numeric):
+        return None
+    if 0 <= numeric <= 1:
+        return numeric
     if 1 < numeric <= 100:
-        numeric /= 100
-    return min(1.0, max(0.0, numeric))
+        return numeric / 100
+    return None
 
 
 def _claim_from_mapping(item: dict[str, Any], chunk: DocumentChunk) -> Claim | None:
@@ -126,7 +144,7 @@ def _claim_from_mapping(item: dict[str, Any], chunk: DocumentChunk) -> Claim | N
     obj = item.get("object") or item.get("o")
 
     ns = normalize_entity(subject)
-    nr = normalize_entity(relation)
+    nr = normalize_relation(relation)
     no = normalize_entity(obj)
     if not (ns and nr and no):
         return None
@@ -163,7 +181,7 @@ def _iter_json_items(payload: Any) -> Iterable[dict[str, Any]]:
 
 
 def parse_claims(text: str, chunk: DocumentChunk) -> list[Claim]:
-    """Parse structured JSON first, then fall back to the legacy pipe format."""
+    """Parse structured JSON first, then fall back to the legacy pipe format only if JSON decoding fails."""
     cleaned = _strip_markdown_fence(text)
     claims: list[Claim] = []
 
@@ -171,14 +189,12 @@ def parse_claims(text: str, chunk: DocumentChunk) -> list[Claim]:
         payload = json.loads(cleaned)
     except json.JSONDecodeError:
         payload = None
-
-    if payload is not None:
+    else:
         for item in _iter_json_items(payload):
             claim = _claim_from_mapping(item, chunk)
             if claim:
                 claims.append(claim)
-        if claims:
-            return claims
+        return claims
 
     for raw_line in cleaned.splitlines():
         line = raw_line.strip().lstrip("0123456789.-•*# ").strip()
