@@ -154,14 +154,60 @@ def _node_link_kwargs(graph_data: dict[str, Any], edge_field: str) -> tuple[dict
     return payload, {"edges": edge_field, **_NODE_LINK_FIELDS}
 
 
+def _validate_serialized_identities(
+    graph_data: dict[str, Any],
+    schema_version: int,
+    edge_field: str,
+    node_link_kwargs: dict[str, str],
+) -> None:
+    """Reject structural identities that NetworkX would otherwise silently coalesce."""
+    node_id_field = node_link_kwargs.get("name", "id")
+    source_field = node_link_kwargs.get("source", "source")
+    target_field = node_link_kwargs.get("target", "target")
+    key_field = node_link_kwargs.get("key", "key")
+
+    node_ids: set[str] = set()
+    for node in graph_data["nodes"]:
+        if not isinstance(node, dict):
+            raise ValueError("Graph state nodes must be JSON objects.")
+        node_id = node.get(node_id_field)
+        if not is_bounded_text(node_id, MAX_ENTITY_LABEL_CHARS):
+            raise ValueError(
+                f"Graph state node identifiers must be non-empty strings up to {MAX_ENTITY_LABEL_CHARS} characters."
+            )
+        if node_id in node_ids:
+            raise ValueError(f"Graph state contains duplicate serialized node identifier: {node_id!r}.")
+        node_ids.add(node_id)
+
+    seen_edges: set[tuple[str, ...]] = set()
+    for edge in graph_data[edge_field]:
+        if not isinstance(edge, dict):
+            raise ValueError("Graph state edges must be JSON objects.")
+        subject = edge.get(source_field)
+        obj = edge.get(target_field)
+        if subject not in node_ids or obj not in node_ids:
+            raise ValueError("Graph state edge endpoints must reference declared serialized nodes.")
+
+        if schema_version == 2:
+            key = edge.get(key_field)
+            if not isinstance(key, (str, int)) or isinstance(key, bool):
+                raise ValueError("Graph state v2 edges must contain a string or integer structural key.")
+            identity = (str(subject), str(obj), str(key))
+        else:
+            identity = (str(subject), str(obj))
+
+        if identity in seen_edges:
+            raise ValueError("Graph state contains duplicate serialized edge identity that would lose data.")
+        seen_edges.add(identity)
+
+
 def _node_link_graph(graph_data: dict[str, Any], schema_version: int) -> nx.Graph:
     _validate_graph_data_shape(graph_data, schema_version)
     _validate_serialized_complexity(graph_data)
 
-    if "edges" in graph_data:
-        payload, kwargs = _node_link_kwargs(graph_data, "edges")
-        return nx.node_link_graph(payload, **kwargs)
-    payload, kwargs = _node_link_kwargs(graph_data, "links")
+    edge_field = "edges" if "edges" in graph_data else "links"
+    payload, kwargs = _node_link_kwargs(graph_data, edge_field)
+    _validate_serialized_identities(payload, schema_version, edge_field, kwargs)
     return nx.node_link_graph(payload, **kwargs)
 
 
