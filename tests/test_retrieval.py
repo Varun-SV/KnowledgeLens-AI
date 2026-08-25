@@ -29,6 +29,21 @@ def test_retrieval_includes_source_citation():
     assert "Cache --[reduces]--> Latency" in context
 
 
+def test_retrieval_preserves_integer_and_string_multiedge_keys_as_distinct_claims():
+    graph = nx.MultiDiGraph()
+    graph.add_node("Cache")
+    graph.add_node("Latency")
+    _edge(graph, "Cache", "Latency", 1, "reduces", evidence="Cache reduces latency.")
+    _edge(graph, "Cache", "Latency", "1", "improves", evidence="Cache improves response time.")
+
+    context = retrieve_graph_context(graph, "Explain Cache")
+
+    assert "Cache --[reduces]--> Latency" in context
+    assert "Cache --[improves]--> Latency" in context
+    assert "Cache reduces latency." in context
+    assert "Cache improves response time." in context
+
+
 def test_short_entity_does_not_match_inside_unrelated_words():
     assert score_node("explain the details", "AI") < 3.0
     assert score_node("explain AI details", "AI") >= 3.0
