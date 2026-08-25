@@ -31,3 +31,35 @@ def test_graph_tooltips_use_html_escape_helper():
 
     assert 'title=safe_tooltip_text(f"{node}\\n{degree} connected graph edges")' in app_source
     assert "title=safe_tooltip_text(title)" in app_source
+
+
+def test_manual_master_limit_is_wired_before_graph_creation():
+    app_source = Path("KnowledgeLens_AI.py").read_text(encoding="utf-8")
+
+    assert "max_chars=MAX_ENTITY_LABEL_CHARS" in app_source
+    validation = app_source.index("master_error = manual_master_concept_error(auto_detect, manual_master)")
+    graph_creation = app_source.index("graph, node_map = create_graph(master)")
+    assert validation < graph_creation
+
+
+def test_state_export_failure_is_rendered_instead_of_crashing_page():
+    app_source = Path("KnowledgeLens_AI.py").read_text(encoding="utf-8")
+
+    export_start = app_source.index("state_export = serialize_graph_state(")
+    warning = app_source.index("Graph state export unavailable:", export_start)
+    download = app_source.index('"Graph state",', export_start)
+    assert export_start < warning < download
+
+
+def test_graph_chat_uses_hardened_data_only_prompt_boundary():
+    app_source = Path("KnowledgeLens_AI.py").read_text(encoding="utf-8")
+
+    helper_call = "system_prompt, user_prompt = grounded_chat_messages(context, user_query)"
+    assert helper_call in app_source
+    chat_start = app_source.index(helper_call)
+    call_start = app_source.index("answer = call_llm_api(", chat_start)
+    call_end = app_source.index("temperature,", call_start)
+    call = app_source[call_start:call_end]
+    assert "system_prompt" in call
+    assert "user_prompt" in call
+    assert "Graph context:" not in call
