@@ -7,6 +7,7 @@ from collections.abc import Iterable
 from typing import Any
 
 from .limits import (
+    MAX_CLAIMS_PER_CHUNK,
     MAX_ENTITY_LABEL_CHARS,
     MAX_EVIDENCE_CHARS,
     MAX_RELATION_CHARS,
@@ -203,7 +204,7 @@ def _iter_json_items(payload: Any) -> Iterable[dict[str, Any]]:
 
 
 def parse_claims(text: str, chunk: DocumentChunk) -> list[Claim]:
-    """Parse claims and accept only bounded, source-verifiable verbatim evidence."""
+    """Parse a bounded number of source-verifiable claims from one model response."""
     cleaned = _strip_markdown_fence(text)
     claims: list[Claim] = []
     normalized_source_text = _evidence_match_text(chunk.text)
@@ -217,6 +218,8 @@ def parse_claims(text: str, chunk: DocumentChunk) -> list[Claim]:
             claim = _claim_from_mapping(item, chunk, normalized_source_text)
             if claim:
                 claims.append(claim)
+                if len(claims) >= MAX_CLAIMS_PER_CHUNK:
+                    break
         return claims
 
     for raw_line in cleaned.splitlines():
@@ -242,5 +245,7 @@ def parse_claims(text: str, chunk: DocumentChunk) -> list[Claim]:
         )
         if claim:
             claims.append(claim)
+            if len(claims) >= MAX_CLAIMS_PER_CHUNK:
+                break
 
     return claims
