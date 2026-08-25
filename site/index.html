@@ -8,6 +8,7 @@
   <title>KnowledgeLens AI — Make knowledge inspectable</title>
   <link rel="icon" href="mark.svg" type="image/svg+xml" />
   <link rel="stylesheet" href="styles.css" />
+  <noscript><style>.reveal{opacity:1!important;transform:none!important}</style></noscript>
 </head>
 <body>
   <div class="noise" aria-hidden="true"></div>
@@ -176,6 +177,16 @@
     <p>Open-source evidence graph tooling.</p>
     <span>MIT · 2026</span>
   </footer>
+  <script>
+    window.__klRevealAnimationReady = false;
+    window.addEventListener('DOMContentLoaded', () => {
+      requestAnimationFrame(() => {
+        if (!window.__klRevealAnimationReady) {
+          document.querySelectorAll('.reveal').forEach(el => el.classList.add('visible'));
+        }
+      });
+    });
+  </script>
   <script src="app.js"></script>
 </body>
 </html>
