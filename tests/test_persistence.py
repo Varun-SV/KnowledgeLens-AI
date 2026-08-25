@@ -144,6 +144,27 @@ def test_loader_rejects_undirected_graph_state():
         deserialize_graph_state(raw)
 
 
+def test_loader_rejects_legacy_state_with_mismatched_or_multiple_master_nodes():
+    mismatched = nx.DiGraph()
+    mismatched.add_node("A", type="entity")
+    mismatched.add_node("B", type="master")
+    mismatched.add_edge("A", "B", relations=["supports"], sources=["doc.md"])
+
+    multiple = nx.DiGraph()
+    multiple.add_node("A", type="master")
+    multiple.add_node("B", type="master")
+    multiple.add_edge("A", "B", relations=["supports"], sources=["doc.md"])
+
+    with pytest.raises(ValueError, match="exactly one master"):
+        deserialize_graph_state(
+            json.dumps({"master_concept": "A", "graph_data": nx.node_link_data(mismatched, edges="links")})
+        )
+    with pytest.raises(ValueError, match="exactly one master"):
+        deserialize_graph_state(
+            json.dumps({"master_concept": "A", "graph_data": nx.node_link_data(multiple, edges="links")})
+        )
+
+
 def test_loader_rejects_wrong_multigraph_shape_for_each_schema():
     v1_multigraph = json.dumps(
         {
