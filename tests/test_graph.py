@@ -57,6 +57,18 @@ def test_programming_language_entities_with_significant_punctuation_do_not_merge
     assert node_map[".net"] == ".NET"
 
 
+def test_claim_identity_deduplicates_case_and_nfkc_variants_after_node_resolution():
+    graph, node_map = create_graph("System")
+    claims = [
+        Claim("Cache", "reduces", "Latency", "doc.md", 1, evidence="Cache reduces Latency"),
+        Claim("ＣＡＣＨＥ", "REDUCES", "latency", "doc.md", 1, evidence="Ｃａｃｈｅ reduces Latency"),
+    ]
+
+    assert add_claims(graph, node_map, claims) == 1
+    assert graph.number_of_edges() == 1
+    assert {"Cache", "Latency"}.issubset(graph.nodes)
+
+
 def test_graph_admission_rejects_malformed_direct_claims():
     graph, node_map = create_graph("System")
     malformed = [
@@ -79,6 +91,7 @@ def test_synthetic_master_links_do_not_count_as_sources():
     export = graph_to_export(graph)
     assert export["stats"]["sources"] == 1
     assert export["sources"] == {"perf.pdf": 1}
+    assert export["legacy_source_candidates"] == []
 
 
 def test_synthetic_master_links_do_not_inflate_claim_totals():
@@ -95,28 +108,30 @@ def test_synthetic_master_links_do_not_inflate_claim_totals():
     assert export["stats"]["edges_total"] == 3
 
 
-def test_migrated_legacy_sources_remain_visible_but_not_counted_as_auditable_claims():
+def test_migrated_legacy_sources_remain_visible_without_fabricated_claim_counts():
     graph = nx.MultiDiGraph()
     graph.add_node("A", type="master")
     graph.add_node("B", type="entity")
-    graph.add_edge(
-        "A",
-        "B",
-        key="legacy",
-        relation="relates to",
-        source="",
-        legacy_sources=["paper.pdf", "notes.md"],
-        page=None,
-        chunk_index=0,
-        evidence="legacy aggregated provenance",
-        confidence=None,
-        synthetic=False,
-        provenance_status="legacy-aggregated",
-    )
+    for key, relation in (("legacy-1", "supports"), ("legacy-2", "depends on")):
+        graph.add_edge(
+            "A",
+            "B",
+            key=key,
+            relation=relation,
+            source="",
+            legacy_sources=["paper.pdf", "notes.md"],
+            page=None,
+            chunk_index=0,
+            evidence="legacy aggregated provenance",
+            confidence=None,
+            synthetic=False,
+            provenance_status="legacy-aggregated",
+        )
 
     export = graph_to_export(graph)
 
     assert export["stats"]["claims"] == 0
-    assert export["stats"]["legacy_claims"] == 1
+    assert export["stats"]["legacy_claims"] == 2
     assert export["stats"]["sources"] == 2
-    assert export["sources"] == {"notes.md": 1, "paper.pdf": 1}
+    assert export["sources"] == {}
+    assert export["legacy_source_candidates"] == ["notes.md", "paper.pdf"]
