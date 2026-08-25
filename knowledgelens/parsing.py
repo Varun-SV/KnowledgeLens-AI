@@ -63,8 +63,6 @@ def canonicalize_label(display: str) -> str:
 
     tokens: list[str] = []
     for raw_token in "".join(chars).split():
-        # Periods, slashes, colons, etc. are useful *inside* identifiers (node.js,
-        # C++/CLI, namespace::type) but are commonly decorative at the end of prose.
         token = raw_token.rstrip(_TRAILING_DECORATIVE_PUNCTUATION)
         token = token.lstrip(_LEADING_DECORATIVE_PUNCTUATION)
         if token and any(char.isalnum() for char in token):
@@ -178,6 +176,9 @@ def _claim_from_mapping(
     if not normalized_evidence or normalized_evidence not in normalized_source_text:
         return None
 
+    normalized_overlap_prefix = _evidence_match_text(chunk.overlap_prefix)
+    evidence_from_overlap = bool(normalized_overlap_prefix) and normalized_evidence in normalized_overlap_prefix
+
     return Claim(
         subject=ns[1],
         relation=nr[1],
@@ -187,7 +188,7 @@ def _claim_from_mapping(
         page=chunk.page,
         evidence=evidence,
         confidence=_coerce_confidence(item.get("confidence")),
-        overlap_from_previous=chunk.overlap_from_previous,
+        overlap_from_previous=evidence_from_overlap,
     )
 
 
