@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import math
+import unicodedata
 from collections import defaultdict
 from numbers import Real
 from typing import Any
@@ -15,6 +16,11 @@ from .parsing import normalize_entity
 def canonical_key(label: str) -> str:
     normalized = normalize_entity(label)
     return normalized[0] if normalized else label.strip().casefold()
+
+
+def _identity_text(value: str) -> str:
+    """Normalize Unicode/case/whitespace while preserving identifier punctuation."""
+    return " ".join(unicodedata.normalize("NFKC", value).casefold().split())
 
 
 def _valid_confidence(value: Any) -> bool:
@@ -84,16 +90,17 @@ def get_or_create_node(
     return display
 
 
-def _claim_key(claim: Claim) -> str:
+def _claim_key(claim: Claim, subject: str, obj: str) -> str:
+    """Build claim identity after entity resolution so equivalent labels deduplicate."""
     raw = "\x1f".join(
         [
-            claim.subject,
-            claim.relation,
-            claim.object,
-            claim.source,
+            _identity_text(subject),
+            _identity_text(claim.relation),
+            _identity_text(obj),
+            _identity_text(claim.source),
             str(claim.page),
             str(claim.chunk_index),
-            claim.evidence,
+            _identity_text(claim.evidence),
         ]
     )
     return hashlib.sha1(raw.encode("utf-8")).hexdigest()[:16]
@@ -132,7 +139,7 @@ def add_claims(
         if not subject or not obj:
             continue
 
-        key = _claim_key(claim)
+        key = _claim_key(claim, subject, obj)
         if graph.has_edge(subject, obj, key=key):
             continue
         graph.add_edge(subject, obj, key=key, **edge_data)
@@ -191,18 +198,22 @@ def graph_to_export(graph: nx.MultiDiGraph) -> dict[str, Any]:
             }
         )
 
+    # `sources` is a claim-count ledger only for claims whose primary source is
+    # actually known. Legacy v1 migration preserved candidate source identities
+    # but not relation↔source pairings, so candidates are exposed separately and
+    # never receive fabricated per-claim counts.
     source_counts: dict[str, int] = defaultdict(int)
+    legacy_source_candidates: set[str] = set()
     for claim in claims:
         if claim["synthetic"]:
             continue
         if claim["source"]:
             source_counts[claim["source"]] += 1
             continue
-        # v1 states preserved only an aggregate candidate-source set. Keep those
-        # document identities in the source ledger without fabricating a primary source.
-        for legacy_source in set(claim.get("legacy_sources", [])):
-            if legacy_source:
-                source_counts[str(legacy_source)] += 1
+        if claim.get("provenance_status") == "legacy-aggregated":
+            legacy_source_candidates.update(
+                str(source) for source in claim.get("legacy_sources", []) if source
+            )
 
     auditable_claims = sum(1 for claim in claims if is_auditable_claim_data(claim))
     legacy_claims = sum(
@@ -211,6 +222,7 @@ def graph_to_export(graph: nx.MultiDiGraph) -> dict[str, Any]:
         if not claim["synthetic"] and claim.get("provenance_status") == "legacy-aggregated"
     )
     topology_edges = sum(1 for claim in claims if claim["synthetic"])
+    source_identities = set(source_counts) | legacy_source_candidates
 
     return {
         "schema_version": 2,
@@ -221,7 +233,7 @@ def graph_to_export(graph: nx.MultiDiGraph) -> dict[str, Any]:
             "legacy_claims": legacy_claims,
             "topology_edges": topology_edges,
             "edges_total": len(claims),
-            "sources": len(source_counts),
+            "sources": len(source_identities),
         },
         "entities": [
             {
@@ -233,4 +245,5 @@ def graph_to_export(graph: nx.MultiDiGraph) -> dict[str, Any]:
         ],
         "claims": claims,
         "sources": dict(sorted(source_counts.items())),
+        "legacy_source_candidates": sorted(legacy_source_candidates),
     }
