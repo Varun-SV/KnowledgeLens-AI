@@ -52,7 +52,7 @@ def test_invalid_confidence_values_are_treated_as_unknown():
     values = ("101", "-1", '"Infinity"', '"NaN"')
     for value in values:
         claims = parse_claims(
-            f'[{{"subject":"A","relation":"supports","object":"B","evidence":"source says so","confidence":{value}}}]',
+            f'[{{"subject":"Alpha","relation":"supports","object":"Beta","evidence":"source says so","confidence":{value}}}]',
             chunk,
         )
         assert len(claims) == 1
