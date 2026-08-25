@@ -67,6 +67,23 @@ def test_loader_rejects_missing_edge_collection():
         deserialize_graph_state(raw)
 
 
+def test_loader_rejects_undirected_graph_state():
+    raw = json.dumps(
+        {
+            "schema_version": 1,
+            "master_concept": "A",
+            "graph_data": {
+                "directed": False,
+                "multigraph": False,
+                "nodes": [{"id": "A"}, {"id": "B"}],
+                "links": [{"source": "A", "target": "B", "relations": ["supports"], "sources": ["doc.md"]}],
+            },
+        }
+    )
+    with pytest.raises(ValueError, match="directed graph"):
+        deserialize_graph_state(raw)
+
+
 def test_loader_rejects_newer_schema_versions():
     raw = json.dumps(
         {
