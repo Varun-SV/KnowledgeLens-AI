@@ -3,36 +3,73 @@ from __future__ import annotations
 import hashlib
 from collections import Counter, defaultdict
 from collections.abc import Iterable
+from dataclasses import dataclass
 
 from pypdf import PdfReader
 
 from .models import DocumentChunk
 
 
-def extract_sections_from_file(uploaded_file) -> list[tuple[int | None, str]]:
-    """Extract source sections while preserving PDF page provenance."""
-    uploaded_file.seek(0)
-    name = uploaded_file.name.lower()
+@dataclass(frozen=True, slots=True)
+class IngestionLimits:
+    max_files: int = 24
+    max_upload_bytes: int = 24 * 1024 * 1024
+    max_extracted_chars: int = 1_000_000
+    max_chunks: int = 320
 
-    if name.endswith(".pdf"):
+
+DEFAULT_INGESTION_LIMITS = IngestionLimits()
+
+
+def _format_pages(pages: list[int]) -> str:
+    return ", ".join(str(page) for page in pages)
+
+
+def _extract_sections_with_warnings(uploaded_file) -> tuple[list[tuple[int | None, str]], list[str]]:
+    """Extract sections plus coverage warnings while preserving PDF page provenance."""
+    uploaded_file.seek(0)
+    name = str(uploaded_file.name)
+    lower_name = name.lower()
+
+    if lower_name.endswith(".pdf"):
         reader = PdfReader(uploaded_file)
         sections: list[tuple[int | None, str]] = []
+        failed_pages: list[int] = []
+        empty_pages: list[int] = []
         for page_number, page in enumerate(reader.pages, start=1):
             try:
                 text = page.extract_text() or ""
             except Exception:
-                text = ""
+                failed_pages.append(page_number)
+                continue
             if text.strip():
                 sections.append((page_number, text))
-        return sections
+            else:
+                empty_pages.append(page_number)
+
+        warnings: list[str] = []
+        if failed_pages:
+            warnings.append(f"{name}: PDF text extraction failed on page(s) {_format_pages(failed_pages)}")
+        if empty_pages:
+            warnings.append(
+                f"{name}: PDF page(s) {_format_pages(empty_pages)} had no extractable text "
+                "(possibly scanned/image-only)"
+            )
+        return sections, warnings
 
     raw = uploaded_file.read()
     for encoding in ("utf-8", "utf-8-sig", "latin-1"):
         try:
-            return [(None, raw.decode(encoding))]
+            return [(None, raw.decode(encoding))], []
         except UnicodeDecodeError:
             continue
-    return []
+    return [], []
+
+
+def extract_sections_from_file(uploaded_file) -> list[tuple[int | None, str]]:
+    """Compatibility wrapper returning extracted sections without warning metadata."""
+    sections, _warnings = _extract_sections_with_warnings(uploaded_file)
+    return sections
 
 
 def _split_blocks(text: str) -> list[str]:
@@ -128,6 +165,37 @@ def chunk_section(text: str, max_chars: int = 3200, overlap: int = 240) -> list[
     return chunks
 
 
+def _uploaded_file_size(uploaded_file) -> int:
+    size = getattr(uploaded_file, "size", None)
+    if isinstance(size, int) and not isinstance(size, bool) and size >= 0:
+        return size
+    if hasattr(uploaded_file, "getbuffer"):
+        return uploaded_file.getbuffer().nbytes
+
+    try:
+        position = uploaded_file.tell()
+    except (AttributeError, OSError):
+        position = None
+    uploaded_file.seek(0, 2)
+    total = uploaded_file.tell()
+    if position is not None:
+        uploaded_file.seek(position)
+    else:
+        uploaded_file.seek(0)
+    return total
+
+
+def _workload_limit_warning(files, limits: IngestionLimits) -> str | None:
+    if len(files) > limits.max_files:
+        return f"Ingestion limit exceeded: at most {limits.max_files} files can be processed in one build."
+
+    total_bytes = sum(_uploaded_file_size(uploaded_file) for uploaded_file in files)
+    if total_bytes > limits.max_upload_bytes:
+        mib = limits.max_upload_bytes / (1024 * 1024)
+        return f"Ingestion limit exceeded: combined uploads must be at most {mib:g} MiB per build."
+    return None
+
+
 def _uploaded_file_digest(uploaded_file) -> str:
     """Return a stable short content digest without changing the file's read position."""
     if hasattr(uploaded_file, "getvalue"):
@@ -175,26 +243,51 @@ def _source_labels(uploaded_files) -> list[str]:
     return labels
 
 
-def prepare_chunks(uploaded_files) -> tuple[list[DocumentChunk], list[str]]:
+def prepare_chunks(
+    uploaded_files,
+    limits: IngestionLimits = DEFAULT_INGESTION_LIMITS,
+) -> tuple[list[DocumentChunk], list[str]]:
+    """Prepare bounded chunks; any budget breach returns zero chunks so no LLM work can start."""
     files = list(uploaded_files)
+    limit_warning = _workload_limit_warning(files, limits)
+    if limit_warning:
+        return [], [limit_warning]
+
     source_labels = _source_labels(files)
     chunks: list[DocumentChunk] = []
     warnings: list[str] = []
     global_index = 0
+    extracted_chars = 0
 
     for uploaded_file, source_label in zip(files, source_labels, strict=True):
         try:
-            sections = extract_sections_from_file(uploaded_file)
+            sections, extraction_warnings = _extract_sections_with_warnings(uploaded_file)
         except Exception as exc:
             warnings.append(f"{uploaded_file.name}: {exc}")
             continue
+        warnings.extend(extraction_warnings)
 
         if not sections:
-            warnings.append(f"{uploaded_file.name}: no extractable text found")
+            if not extraction_warnings:
+                warnings.append(f"{uploaded_file.name}: no extractable text found")
             continue
 
         for page, text in sections:
-            for piece in chunk_section(text):
+            extracted_chars += len(text)
+            if extracted_chars > limits.max_extracted_chars:
+                return [], warnings + [
+                    "Ingestion limit exceeded: extracted text is too large for one build "
+                    f"(maximum {limits.max_extracted_chars:,} characters)."
+                ]
+
+            pieces = chunk_section(text)
+            if global_index + len(pieces) > limits.max_chunks:
+                return [], warnings + [
+                    "Ingestion limit exceeded: the build would require too many model requests "
+                    f"(maximum {limits.max_chunks} chunks)."
+                ]
+
+            for piece in pieces:
                 global_index += 1
                 chunks.append(
                     DocumentChunk(
