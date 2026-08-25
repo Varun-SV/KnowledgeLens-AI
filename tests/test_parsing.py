@@ -30,6 +30,35 @@ def test_claims_without_supporting_evidence_are_rejected():
     assert pipe_claims == []
 
 
+def test_relation_stopwords_are_not_rejected_as_entity_stopwords():
+    chunk = DocumentChunk(source="topology.md", text="x", chunk_index=1)
+    for relation in ("in", "on", "to", "for"):
+        claims = parse_claims(
+            f'[{{"subject":"Service","relation":"{relation}","object":"Region","evidence":"source says so"}}]',
+            chunk,
+        )
+        assert len(claims) == 1
+        assert claims[0].relation == relation
+
+
+def test_successfully_decoded_non_claim_json_is_not_reinterpreted_as_pipe_output():
+    chunk = DocumentChunk(source="notes.md", text="x", chunk_index=1)
+    claims = parse_claims('{"message":"A | relates | B | looks like evidence"}', chunk)
+    assert claims == []
+
+
+def test_invalid_confidence_values_are_treated_as_unknown():
+    chunk = DocumentChunk(source="notes.md", text="x", chunk_index=1)
+    values = ("101", "-1", '"Infinity"', '"NaN"')
+    for value in values:
+        claims = parse_claims(
+            f'[{{"subject":"A","relation":"supports","object":"B","evidence":"source says so","confidence":{value}}}]',
+            chunk,
+        )
+        assert len(claims) == 1
+        assert claims[0].confidence is None
+
+
 def test_unicode_entity_normalization_is_preserved():
     assert normalize_entity("人工知能")[0] == "人工知能"
     assert normalize_entity("Привет Мир")[0] == "привет мир"
