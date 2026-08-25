@@ -10,6 +10,7 @@ class DocumentChunk:
     text: str
     chunk_index: int
     page: int | None = None
+    overlap_from_previous: bool = False
 
     @property
     def citation(self) -> str:
@@ -28,6 +29,7 @@ class Claim:
     evidence: str = ""
     confidence: float | None = None
     synthetic: bool = False
+    overlap_from_previous: bool = False
 
     def to_dict(self) -> dict[str, Any]:
         data = asdict(self)
