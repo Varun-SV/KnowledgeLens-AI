@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import hashlib
 from collections import Counter, defaultdict
-from collections.abc import Iterable
+from collections.abc import Iterable, Iterator
 from dataclasses import dataclass
 
 from pypdf import PdfReader
@@ -16,6 +16,18 @@ class IngestionLimits:
     max_upload_bytes: int = 24 * 1024 * 1024
     max_extracted_chars: int = 1_000_000
     max_chunks: int = 320
+
+
+@dataclass(slots=True)
+class IngestionResult:
+    chunks: list[DocumentChunk]
+    warnings: list[str]
+    fatal_error: str | None = None
+
+    def __iter__(self) -> Iterator[list[DocumentChunk] | list[str]]:
+        """Preserve the existing `chunks, warnings = prepare_chunks(...)` API."""
+        yield self.chunks
+        yield self.warnings
 
 
 DEFAULT_INGESTION_LIMITS = IngestionLimits()
@@ -246,12 +258,12 @@ def _source_labels(uploaded_files) -> list[str]:
 def prepare_chunks(
     uploaded_files,
     limits: IngestionLimits = DEFAULT_INGESTION_LIMITS,
-) -> tuple[list[DocumentChunk], list[str]]:
-    """Prepare bounded chunks; any budget breach returns zero chunks so no LLM work can start."""
+) -> IngestionResult:
+    """Prepare bounded chunks and distinguish fatal budget rejection from empty extraction."""
     files = list(uploaded_files)
     limit_warning = _workload_limit_warning(files, limits)
     if limit_warning:
-        return [], [limit_warning]
+        return IngestionResult([], [], fatal_error=limit_warning)
 
     source_labels = _source_labels(files)
     chunks: list[DocumentChunk] = []
@@ -275,17 +287,25 @@ def prepare_chunks(
         for page, text in sections:
             extracted_chars += len(text)
             if extracted_chars > limits.max_extracted_chars:
-                return [], warnings + [
-                    "Ingestion limit exceeded: extracted text is too large for one build "
-                    f"(maximum {limits.max_extracted_chars:,} characters)."
-                ]
+                return IngestionResult(
+                    [],
+                    warnings,
+                    fatal_error=(
+                        "Ingestion limit exceeded: extracted text is too large for one build "
+                        f"(maximum {limits.max_extracted_chars:,} characters)."
+                    ),
+                )
 
             pieces = chunk_section(text)
             if global_index + len(pieces) > limits.max_chunks:
-                return [], warnings + [
-                    "Ingestion limit exceeded: the build would require too many model requests "
-                    f"(maximum {limits.max_chunks} chunks)."
-                ]
+                return IngestionResult(
+                    [],
+                    warnings,
+                    fatal_error=(
+                        "Ingestion limit exceeded: the build would require too many model requests "
+                        f"(maximum {limits.max_chunks} chunks)."
+                    ),
+                )
 
             for piece in pieces:
                 global_index += 1
@@ -297,4 +317,4 @@ def prepare_chunks(
                         page=page,
                     )
                 )
-    return chunks, warnings
+    return IngestionResult(chunks, warnings)
