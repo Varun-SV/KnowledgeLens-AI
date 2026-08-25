@@ -18,7 +18,7 @@ Each extracted claim can preserve its own **source, page/chunk, evidence, and co
 
 - **Document + code ingestion:** text-based PDF, TXT, Markdown, JSON, XML, HTML, CSS, JavaScript/TypeScript, Python, Java, C/C++, C#, Go, Rust, PHP, Ruby, Kotlin, Swift, shell, YAML, SQL, R, TeX and other text-like formats.
 - **Provider-neutral LLM connection:** built-in Ollama, llama.cpp, and OpenAI presets plus an operator-configured OpenAI-compatible endpoint.
-- **Auditable extraction:** structured claim parsing with a compatibility fallback for legacy `SUBJECT | RELATION | OBJECT` output.
+- **Auditable extraction:** structured claim parsing with a compatibility fallback for legacy `SUBJECT | RELATION | OBJECT | VERBATIM_EVIDENCE [| CONFIDENCE]` output. The evidence field is required and must occur in the supplied source chunk.
 - **Per-claim provenance:** the graph uses a `MultiDiGraph`, so each source-backed relationship remains independently inspectable.
 - **Interactive graph:** drag, pan, zoom and hover relationships to inspect provenance.
 - **Graph-aware retrieval:** boundary-aware entity matching, local claim neighborhoods, and short mixed-direction graph paths are surfaced before chat generation.
@@ -99,13 +99,14 @@ The core code is split into focused modules:
 
 ```text
 knowledgelens/
-├── graph.py        # MultiDiGraph + provenance-preserving claims
-├── ingestion.py    # file extraction + line-preserving chunking
-├── models.py       # DocumentChunk / Claim
-├── parsing.py      # structured output + compatibility parser
-├── persistence.py  # pinned state schema + legacy migration
-├── retrieval.py    # entity scoring, neighborhoods, mixed-direction paths
-└── security.py     # endpoint network policy
+├── graph.py         # MultiDiGraph + provenance-preserving claims
+├── ingestion.py     # bounded file extraction + line-preserving chunking
+├── models.py        # DocumentChunk / Claim
+├── parsing.py       # structured output + compatibility parser
+├── persistence.py   # bounded state schema + legacy migration
+├── presentation.py  # safe visualization text helpers
+├── retrieval.py     # entity scoring, neighborhoods, mixed-direction paths
+└── security.py      # endpoint network policy
 ```
 
 The Streamlit UI/orchestration remains in `KnowledgeLens_AI.py`.
