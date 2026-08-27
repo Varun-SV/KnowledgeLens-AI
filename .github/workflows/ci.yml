@@ -17,6 +17,22 @@ jobs:
       fail-fast: false
       matrix:
         python-version: ["3.10", "3.12", "3.13"]
+    services:
+      postgres:
+        image: postgres:18
+        env:
+          POSTGRES_USER: knowledgelens
+          POSTGRES_PASSWORD: knowledgelens-ci
+          POSTGRES_DB: knowledgelens_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U knowledgelens -d knowledgelens_test"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+    env:
+      KNOWLEDGELENS_TEST_DATABASE_URL: postgresql://knowledgelens:knowledgelens-ci@127.0.0.1:5432/knowledgelens_test
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
@@ -30,6 +46,6 @@ jobs:
       - name: Tests
         run: python -m pytest
       - name: Compile
-        run: python -m compileall -q KnowledgeLens_AI.py knowledgelens
+        run: python -m compileall -q KnowledgeLens_AI.py knowledgelens pages
       - name: JavaScript syntax
         run: node --check site/app.js
