@@ -10,22 +10,19 @@ from .secrets import build_secret_store
 _ACTIVE_KEY = "active_provider_profile_id"
 
 
-def _profile_uuid(profile_id: str) -> uuid.UUID:
-    try:
-        return uuid.UUID(str(profile_id))
-    except (ValueError, TypeError, AttributeError) as exc:
-        raise ValueError("Invalid provider profile identifier.") from exc
-
-
 def set_active_profile(database: Database, profile_id: str) -> None:
-    profile_uuid = _profile_uuid(profile_id)
+    try:
+        profile_uuid = uuid.UUID(profile_id)
+    except (ValueError, AttributeError, TypeError) as exc:
+        raise ValueError("Provider profile ID is invalid.") from exc
+
     with database.connect() as connection:
         with connection.transaction():
-            profile = connection.execute(
-                "SELECT id FROM provider_profiles WHERE id = %s AND enabled = TRUE",
+            existing = connection.execute(
+                "SELECT 1 FROM provider_profiles WHERE id = %s AND enabled = TRUE",
                 (profile_uuid,),
             ).fetchone()
-            if not profile:
+            if not existing:
                 raise ValueError("Provider profile does not exist or is disabled.")
             connection.execute(
                 """
@@ -51,8 +48,8 @@ def active_profile_record(database: Database) -> dict | None:
         if not profile_id:
             return None
         try:
-            profile_uuid = _profile_uuid(str(profile_id))
-        except ValueError:
+            profile_uuid = uuid.UUID(str(profile_id))
+        except (ValueError, AttributeError, TypeError):
             return None
         row = connection.execute(
             """
