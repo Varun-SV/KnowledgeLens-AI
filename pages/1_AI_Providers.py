@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import streamlit as st
 
+from knowledgelens.provider_activation import active_profile_record, set_active_profile
 from knowledgelens.provider_profiles import (
     KNOWN_CAPABILITIES,
     configured_deployment_mode,
@@ -35,9 +36,15 @@ management_error = profile_management_error(deployment_mode=deployment_mode, rol
 
 try:
     profiles = svc.profiles.list()
+    active = active_profile_record(svc.database)
 except Exception as exc:
     st.error(f"Could not load provider profiles: {exc}")
     st.stop()
+
+if active:
+    st.success(f"Active workspace provider: {active['name']} · {active['base_url']} · {active['default_model']}")
+else:
+    st.info("No persistent profile is active. The workspace will use the legacy in-session provider selector.")
 
 st.subheader("Configured profiles")
 for profile in profiles:
@@ -61,6 +68,16 @@ if management_error:
     )
     st.stop()
 
+if selected and st.button("Activate this profile", type="primary"):
+    try:
+        set_active_profile(svc.database, selected.id)
+        st.session_state["model_configured"] = selected.default_model
+        st.success(
+            f"Activated {selected.name}. Return to the workspace and select Configured endpoint; no server restart is required."
+        )
+    except Exception as exc:
+        st.error(f"Could not activate provider profile: {exc}")
+
 provider_types = ["openai-compatible", "openai", "ollama", "llama.cpp"]
 with st.form("provider_profile_form"):
     name = st.text_input("Profile name", value=selected.name if selected else "")
@@ -79,7 +96,7 @@ with st.form("provider_profile_form"):
         type="password",
         help="Leave blank to keep an existing credential. New values prefer the OS keychain and use encrypted PostgreSQL fallback on servers.",
     )
-    submitted = st.form_submit_button("Save profile", type="primary")
+    submitted = st.form_submit_button("Save profile")
 
 if submitted:
     try:
@@ -109,7 +126,7 @@ if submitted:
                 profile_id=saved.id,
                 is_builtin=saved.is_builtin,
             )
-        st.success(f"Saved {saved.name}. The workspace can use it immediately; no server restart is required.")
+        st.success(f"Saved {saved.name}. It can be activated immediately without restarting KnowledgeLens.")
         st.rerun()
     except Exception as exc:
         st.error(f"Could not save provider profile: {exc}")
