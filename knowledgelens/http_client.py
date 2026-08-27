@@ -7,10 +7,16 @@ import urllib3
 from urllib3.util import Timeout
 
 from .limits import MAX_REQUEST_HEADERS_BYTES
+from .provider_activation import active_profile_secret_for_endpoint, restore_active_profile_environment
 from .security import IPAddress, ValidatedEndpoint
 
 _MAX_REQUEST_BYTES = 96 * 1024
 _MAX_RESPONSE_BYTES = 5 * 1024 * 1024
+
+# The workspace already imports this transport before it builds the provider selector.
+# Restoring the active profile here keeps the v0.2 UI compatible while allowing a
+# PostgreSQL-backed endpoint to survive process restarts.
+restore_active_profile_environment()
 
 
 class PinnedRequestError(RuntimeError):
@@ -50,6 +56,10 @@ def _request_pinned(endpoint: ValidatedEndpoint, method: str, target: str, *, bo
     if not target.startswith("/") or "://" in target or "\r" in target or "\n" in target:
         raise PinnedRequestError("Pinned request targets must be relative absolute paths.")
     request_headers = dict(headers or {})
+    if "Authorization" not in request_headers:
+        secret = active_profile_secret_for_endpoint(endpoint.base_url)
+        if secret:
+            request_headers["Authorization"] = f"Bearer {secret}"
     request_headers["Host"] = endpoint.host_header
     _validate_headers(request_headers)
     errors: list[str] = []
