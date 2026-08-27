@@ -7,7 +7,7 @@ import urllib3
 from urllib3.util import Timeout
 
 from .limits import MAX_REQUEST_HEADERS_BYTES
-from .provider_activation import active_profile_secret_for_endpoint, restore_active_profile_environment
+from .provider_activation import active_profile_request_config, restore_active_profile_environment
 from .security import IPAddress, ValidatedEndpoint
 
 _MAX_REQUEST_BYTES = 96 * 1024
@@ -59,15 +59,10 @@ def _request_pinned(
     *,
     body: bytes | None = None,
     headers: dict[str, str] | None = None,
-    use_active_provider_secret: bool = False,
 ) -> tuple[int, bytes]:
     if not target.startswith("/") or "://" in target or "\r" in target or "\n" in target:
         raise PinnedRequestError("Pinned request targets must be relative absolute paths.")
     request_headers = dict(headers or {})
-    if use_active_provider_secret and "Authorization" not in request_headers:
-        secret = active_profile_secret_for_endpoint(endpoint.base_url)
-        if secret:
-            request_headers["Authorization"] = f"Bearer {secret}"
     request_headers["Host"] = endpoint.host_header
     _validate_headers(request_headers)
     errors: list[str] = []
@@ -75,7 +70,15 @@ def _request_pinned(
         pool = _pool_for(endpoint, address)
         response = None
         try:
-            response = pool.urlopen(method, target, body=body, headers=request_headers, redirect=False, retries=False, preload_content=False)
+            response = pool.urlopen(
+                method,
+                target,
+                body=body,
+                headers=request_headers,
+                redirect=False,
+                retries=False,
+                preload_content=False,
+            )
             data = response.read(_MAX_RESPONSE_BYTES + 1)
             if len(data) > _MAX_RESPONSE_BYTES:
                 raise PinnedRequestError("The endpoint response exceeded the 5 MiB safety limit.")
@@ -92,22 +95,33 @@ def _request_pinned(
     raise PinnedRequestError(f"Could not reach the endpoint via its validated addresses: {detail}")
 
 
-def post_json_pinned(endpoint: ValidatedEndpoint, payload: dict[str, Any], headers: dict[str, str] | None = None) -> tuple[int, bytes]:
-    """POST bounded LLM JSON to one of the exact IP addresses that passed endpoint validation."""
-    body = json.dumps(payload, ensure_ascii=False).encode("utf-8")
+def post_json_pinned(
+    endpoint: ValidatedEndpoint,
+    payload: dict[str, Any],
+    headers: dict[str, str] | None = None,
+) -> tuple[int, bytes]:
+    """POST bounded LLM JSON to one of the exact IP addresses that passed endpoint validation.
+
+    When the endpoint is the active persistent provider profile, the profile's saved
+    model and credential are authoritative. This makes profile activation survive a
+    full app-process restart while the legacy Streamlit provider controls remain
+    available as a compatibility path.
+    """
+    request_payload = dict(payload)
+    request_headers = dict(headers or {})
+    active = active_profile_request_config(endpoint.base_url)
+    if active:
+        if "model" in request_payload:
+            request_payload["model"] = active.model
+        if active.secret and "Authorization" not in request_headers:
+            request_headers["Authorization"] = f"Bearer {active.secret}"
+
+    body = json.dumps(request_payload, ensure_ascii=False).encode("utf-8")
     if len(body) > _MAX_REQUEST_BYTES:
         raise PinnedRequestError("The LLM request exceeded the 96 KiB safety limit.")
-    request_headers = dict(headers or {})
     request_headers.setdefault("Content-Type", "application/json")
     target = f"{endpoint.base_path}/v1/chat/completions" if endpoint.base_path else "/v1/chat/completions"
-    return _request_pinned(
-        endpoint,
-        "POST",
-        target,
-        body=body,
-        headers=request_headers,
-        use_active_provider_secret=True,
-    )
+    return _request_pinned(endpoint, "POST", target, body=body, headers=request_headers)
 
 
 def get_pinned(endpoint: ValidatedEndpoint, target: str, headers: dict[str, str] | None = None) -> tuple[int, bytes]:
