@@ -27,6 +27,9 @@ dev = [
   "ruff>=0.11,<1",
 ]
 
+[project.scripts]
+knowledgelens = "knowledgelens.cli:main"
+
 [tool.setuptools.packages.find]
 include = ["knowledgelens*"]
 
