@@ -5,6 +5,7 @@ import streamlit as st
 from knowledgelens.provider_activation import active_profile_record, set_active_profile
 from knowledgelens.provider_profiles import (
     KNOWN_CAPABILITIES,
+    KNOWN_PROVIDER_TYPES,
     configured_deployment_mode,
     discover_models,
     profile_management_error,
@@ -63,7 +64,7 @@ selected = profile_map.get(selection)
 if management_error:
     st.warning(management_error)
     st.info(
-        "PR #2 keeps public deployments read-only until the bootstrap-admin/OIDC session layer is wired in PR #5. "
+        "PR #2 keeps public deployments read-only until the authenticated admin session layer is completed in PR #5. "
         "Local/private trusted deployments can manage endpoints now."
     )
     st.stop()
@@ -78,25 +79,44 @@ if selected and st.button("Activate this profile", type="primary"):
     except Exception as exc:
         st.error(f"Could not activate provider profile: {exc}")
 
-provider_types = ["openai-compatible", "openai", "ollama", "llama.cpp"]
+if selected and selected.is_builtin:
+    st.info("Built-in profiles are read-only presets. Create a custom profile to persist a different endpoint, model, or key.")
+
 with st.form("provider_profile_form"):
-    name = st.text_input("Profile name", value=selected.name if selected else "")
-    selected_type = selected.provider_type if selected and selected.provider_type in provider_types else provider_types[0]
-    provider_type = st.selectbox("Provider type", provider_types, index=provider_types.index(selected_type))
-    base_url = st.text_input("Base URL", value=selected.base_url if selected else "")
-    default_model = st.text_input("Default model", value=selected.default_model if selected else "")
+    name = st.text_input("Profile name", value=selected.name if selected else "", disabled=bool(selected and selected.is_builtin))
+    selected_type = selected.provider_type if selected and selected.provider_type in KNOWN_PROVIDER_TYPES else KNOWN_PROVIDER_TYPES[0]
+    provider_type = st.selectbox(
+        "Provider type",
+        list(KNOWN_PROVIDER_TYPES),
+        index=list(KNOWN_PROVIDER_TYPES).index(selected_type),
+        disabled=bool(selected and selected.is_builtin),
+    )
+    base_url = st.text_input(
+        "Base URL", value=selected.base_url if selected else "", disabled=bool(selected and selected.is_builtin)
+    )
+    default_model = st.text_input(
+        "Default model", value=selected.default_model if selected else "", disabled=bool(selected and selected.is_builtin)
+    )
     capabilities = st.multiselect(
         "Capabilities",
         list(KNOWN_CAPABILITIES),
         default=list(selected.capabilities if selected else ("text",)),
-        help="Capabilities remain explicit unless the provider supplies trustworthy metadata; model names are never used as proof of vision support.",
+        help=(
+            "Capabilities remain explicit unless the provider supplies trustworthy metadata; "
+            "model names are never used as proof of vision support."
+        ),
+        disabled=bool(selected and selected.is_builtin),
     )
     credential = st.text_input(
         "API key / bearer credential",
         type="password",
-        help="Leave blank to keep an existing credential. New values prefer the OS keychain and use encrypted PostgreSQL fallback on servers.",
+        disabled=bool(selected and selected.is_builtin),
+        help=(
+            "Leave blank to keep an existing credential. New values prefer the OS keychain and use encrypted "
+            "PostgreSQL fallback on servers."
+        ),
     )
-    submitted = st.form_submit_button("Save profile")
+    submitted = st.form_submit_button("Save profile", disabled=bool(selected and selected.is_builtin))
 
 if submitted:
     try:
@@ -109,7 +129,6 @@ if submitted:
             capabilities=capabilities,
             secret_ref=secret_ref,
             profile_id=selected.id if selected else None,
-            is_builtin=selected.is_builtin if selected else False,
         )
         if credential:
             if svc.secrets is None:
@@ -124,7 +143,6 @@ if submitted:
                 capabilities=saved.capabilities,
                 secret_ref=secret_ref,
                 profile_id=saved.id,
-                is_builtin=saved.is_builtin,
             )
         st.success(f"Saved {saved.name}. It can be activated immediately without restarting KnowledgeLens.")
         st.rerun()
