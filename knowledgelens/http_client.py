@@ -52,11 +52,19 @@ def _validate_headers(headers: dict[str, str]) -> None:
         raise PinnedRequestError(f"The request headers exceeded the {MAX_REQUEST_HEADERS_BYTES // 1024} KiB safety limit.")
 
 
-def _request_pinned(endpoint: ValidatedEndpoint, method: str, target: str, *, body: bytes | None = None, headers: dict[str, str] | None = None) -> tuple[int, bytes]:
+def _request_pinned(
+    endpoint: ValidatedEndpoint,
+    method: str,
+    target: str,
+    *,
+    body: bytes | None = None,
+    headers: dict[str, str] | None = None,
+    use_active_provider_secret: bool = False,
+) -> tuple[int, bytes]:
     if not target.startswith("/") or "://" in target or "\r" in target or "\n" in target:
         raise PinnedRequestError("Pinned request targets must be relative absolute paths.")
     request_headers = dict(headers or {})
-    if "Authorization" not in request_headers:
+    if use_active_provider_secret and "Authorization" not in request_headers:
         secret = active_profile_secret_for_endpoint(endpoint.base_url)
         if secret:
             request_headers["Authorization"] = f"Bearer {secret}"
@@ -85,18 +93,30 @@ def _request_pinned(endpoint: ValidatedEndpoint, method: str, target: str, *, bo
 
 
 def post_json_pinned(endpoint: ValidatedEndpoint, payload: dict[str, Any], headers: dict[str, str] | None = None) -> tuple[int, bytes]:
-    """POST bounded JSON to one of the exact IP addresses that passed endpoint validation."""
+    """POST bounded LLM JSON to one of the exact IP addresses that passed endpoint validation."""
     body = json.dumps(payload, ensure_ascii=False).encode("utf-8")
     if len(body) > _MAX_REQUEST_BYTES:
         raise PinnedRequestError("The LLM request exceeded the 96 KiB safety limit.")
     request_headers = dict(headers or {})
     request_headers.setdefault("Content-Type", "application/json")
     target = f"{endpoint.base_path}/v1/chat/completions" if endpoint.base_path else "/v1/chat/completions"
-    return _request_pinned(endpoint, "POST", target, body=body, headers=request_headers)
+    return _request_pinned(
+        endpoint,
+        "POST",
+        target,
+        body=body,
+        headers=request_headers,
+        use_active_provider_secret=True,
+    )
 
 
 def get_pinned(endpoint: ValidatedEndpoint, target: str, headers: dict[str, str] | None = None) -> tuple[int, bytes]:
-    """GET a bounded relative path without re-resolving the validated hostname."""
+    """GET a bounded relative path without re-resolving the validated hostname.
+
+    This primitive never injects the active LLM credential. Provider discovery passes
+    its credential explicitly, so future parser/storage callers cannot inherit an LLM
+    secret merely because they share a host.
+    """
     if endpoint.base_path and not target.startswith(endpoint.base_path + "/") and target != endpoint.base_path:
         target = f"{endpoint.base_path}{target}"
     return _request_pinned(endpoint, "GET", target, headers=headers)
