@@ -1,9 +1,11 @@
 import ipaddress
+import json
 
 import pytest
 
 from knowledgelens import http_client
 from knowledgelens.limits import MAX_REQUEST_HEADERS_BYTES
+from knowledgelens.provider_activation import ActiveProviderRequestConfig
 from knowledgelens.security import ValidatedEndpoint
 
 
@@ -44,13 +46,18 @@ def _endpoint() -> ValidatedEndpoint:
     )
 
 
-def test_https_request_uses_validated_ip_and_original_tls_identity(monkeypatch):
+def _capture_pool(monkeypatch):
     captured = {}
     monkeypatch.setattr(
         http_client.urllib3,
         "HTTPSConnectionPool",
         lambda **kwargs: _FakePool(captured, **kwargs),
     )
+    return captured
+
+
+def test_https_request_uses_validated_ip_and_original_tls_identity(monkeypatch):
+    captured = _capture_pool(monkeypatch)
 
     status, body = http_client.post_json_pinned(_endpoint(), {"model": "test"}, {"Authorization": "Bearer secret"})
 
@@ -66,11 +73,45 @@ def test_https_request_uses_validated_ip_and_original_tls_identity(monkeypatch):
     assert captured["closed"] is True
 
 
+def test_active_profile_supplies_model_and_credential_without_overriding_explicit_header(monkeypatch):
+    captured = _capture_pool(monkeypatch)
+    monkeypatch.setattr(
+        http_client,
+        "active_profile_request_config",
+        lambda _url: ActiveProviderRequestConfig(model="persisted-model", secret="persisted-secret"),
+    )
+
+    http_client.post_json_pinned(_endpoint(), {"model": "legacy-default", "messages": []})
+    sent = json.loads(captured["request_kwargs"]["body"])
+    assert sent["model"] == "persisted-model"
+    assert captured["request_kwargs"]["headers"]["Authorization"] == "Bearer persisted-secret"
+
+    captured = _capture_pool(monkeypatch)
+    http_client.post_json_pinned(
+        _endpoint(),
+        {"model": "legacy-default", "messages": []},
+        {"Authorization": "Bearer explicit"},
+    )
+    assert captured["request_kwargs"]["headers"]["Authorization"] == "Bearer explicit"
+
+
+def test_generic_get_never_looks_up_or_injects_active_llm_credential(monkeypatch):
+    captured = _capture_pool(monkeypatch)
+
+    def must_not_resolve(_url):
+        raise AssertionError("generic GET must not resolve active LLM settings")
+
+    monkeypatch.setattr(http_client, "active_profile_request_config", must_not_resolve)
+    http_client.get_pinned(_endpoint(), "/v1/models")
+    assert "Authorization" not in captured["request_kwargs"]["headers"]
+
+
 def test_oversized_request_is_rejected_before_opening_connection(monkeypatch):
     def must_not_connect(*_args, **_kwargs):
         raise AssertionError("pool must not be constructed for oversized request")
 
     monkeypatch.setattr(http_client, "_pool_for", must_not_connect)
+    monkeypatch.setattr(http_client, "active_profile_request_config", lambda _url: None)
     payload = {"messages": [{"role": "user", "content": "x" * http_client._MAX_REQUEST_BYTES}]}
 
     with pytest.raises(http_client.PinnedRequestError, match="request exceeded"):
@@ -82,6 +123,7 @@ def test_oversized_or_multiline_headers_are_rejected_before_connection(monkeypat
         raise AssertionError("pool must not be constructed for unsafe headers")
 
     monkeypatch.setattr(http_client, "_pool_for", must_not_connect)
+    monkeypatch.setattr(http_client, "active_profile_request_config", lambda _url: None)
 
     with pytest.raises(http_client.PinnedRequestError, match="headers exceeded"):
         http_client.post_json_pinned(
