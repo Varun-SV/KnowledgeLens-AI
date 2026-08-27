@@ -3,11 +3,18 @@ from __future__ import annotations
 import json
 import os
 import uuid
+from dataclasses import dataclass
 
 from .database import Database, DatabaseUnavailable
 from .secrets import build_secret_store
 
 _ACTIVE_KEY = "active_provider_profile_id"
+
+
+@dataclass(frozen=True, slots=True)
+class ActiveProviderRequestConfig:
+    model: str
+    secret: str | None
 
 
 def set_active_profile(database: Database, profile_id: str) -> None:
@@ -75,7 +82,7 @@ def restore_active_profile_environment(database: Database | None = None) -> dict
     return profile
 
 
-def _active_profile_for_endpoint(endpoint_base_url: str) -> dict | None:
+def _active_profile_for_endpoint(endpoint_base_url: str) -> tuple[Database, dict] | None:
     database = Database()
     try:
         profile = active_profile_record(database)
@@ -83,19 +90,28 @@ def _active_profile_for_endpoint(endpoint_base_url: str) -> dict | None:
         return None
     if not profile or str(profile["base_url"]).rstrip("/") != endpoint_base_url.rstrip("/"):
         return None
-    return profile
+    return database, profile
+
+
+def active_profile_request_config(endpoint_base_url: str) -> ActiveProviderRequestConfig | None:
+    resolved = _active_profile_for_endpoint(endpoint_base_url)
+    if not resolved:
+        return None
+    database, profile = resolved
+    secret: str | None = None
+    if profile.get("secret_ref"):
+        try:
+            secret = build_secret_store(database).get(str(profile["secret_ref"]))
+        except RuntimeError:
+            secret = None
+    return ActiveProviderRequestConfig(model=str(profile["default_model"]), secret=secret)
 
 
 def active_profile_model_for_endpoint(endpoint_base_url: str) -> str | None:
-    profile = _active_profile_for_endpoint(endpoint_base_url)
-    return str(profile["default_model"]) if profile else None
+    config = active_profile_request_config(endpoint_base_url)
+    return config.model if config else None
 
 
 def active_profile_secret_for_endpoint(endpoint_base_url: str) -> str | None:
-    profile = _active_profile_for_endpoint(endpoint_base_url)
-    if not profile or not profile.get("secret_ref"):
-        return None
-    try:
-        return build_secret_store(Database()).get(str(profile["secret_ref"]))
-    except RuntimeError:
-        return None
+    config = active_profile_request_config(endpoint_base_url)
+    return config.secret if config else None
