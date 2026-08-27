@@ -9,6 +9,7 @@ venv/
 .env.*
 !.env.example
 .streamlit/secrets.toml
+data/
 .DS_Store
 Thumbs.db
 coverage.xml

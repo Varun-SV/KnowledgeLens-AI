@@ -16,6 +16,9 @@ dependencies = [
   "pyvis>=0.3.2,<0.4",
   "streamlit>=1.54,<2",
   "urllib3>=2.2,<3",
+  "psycopg[binary]>=3.3,<4",
+  "keyring>=25.7,<26",
+  "cryptography>=50,<51",
 ]
 
 [project.optional-dependencies]
@@ -23,6 +26,9 @@ dev = [
   "pytest>=8.3,<9",
   "ruff>=0.11,<1",
 ]
+
+[project.scripts]
+knowledgelens = "knowledgelens.cli:main"
 
 [tool.setuptools.packages.find]
 include = ["knowledgelens*"]
