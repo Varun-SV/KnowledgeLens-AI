@@ -40,53 +40,27 @@ def _validate_headers(headers: dict[str, str]) -> None:
     total_bytes = 0
     for name, value in headers.items():
         if "\r" in name or "\n" in name or "\r" in value or "\n" in value:
-            raise PinnedRequestError("Outbound LLM request headers must not contain line breaks.")
+            raise PinnedRequestError("Outbound request headers must not contain line breaks.")
         total_bytes += len(name.encode("utf-8")) + len(value.encode("utf-8")) + 4
     if total_bytes > MAX_REQUEST_HEADERS_BYTES:
-        raise PinnedRequestError(
-            f"The LLM request headers exceeded the {MAX_REQUEST_HEADERS_BYTES // 1024} KiB safety limit."
-        )
+        raise PinnedRequestError(f"The request headers exceeded the {MAX_REQUEST_HEADERS_BYTES // 1024} KiB safety limit.")
 
 
-def post_json_pinned(
-    endpoint: ValidatedEndpoint,
-    payload: dict[str, Any],
-    headers: dict[str, str] | None = None,
-) -> tuple[int, bytes]:
-    """POST bounded JSON to one of the exact IP addresses that passed endpoint validation.
-
-    The TCP connection is made to a validated IP literal, while the original hostname
-    is retained in Host and, for HTTPS, SNI/certificate verification. This prevents a
-    second DNS lookup from changing the destination after policy validation.
-    """
-    body = json.dumps(payload, ensure_ascii=False).encode("utf-8")
-    if len(body) > _MAX_REQUEST_BYTES:
-        raise PinnedRequestError("The LLM request exceeded the 96 KiB safety limit.")
-
+def _request_pinned(endpoint: ValidatedEndpoint, method: str, target: str, *, body: bytes | None = None, headers: dict[str, str] | None = None) -> tuple[int, bytes]:
+    if not target.startswith("/") or "://" in target or "\r" in target or "\n" in target:
+        raise PinnedRequestError("Pinned request targets must be relative absolute paths.")
     request_headers = dict(headers or {})
-    request_headers.setdefault("Content-Type", "application/json")
     request_headers["Host"] = endpoint.host_header
     _validate_headers(request_headers)
-
-    target = f"{endpoint.base_path}/v1/chat/completions" if endpoint.base_path else "/v1/chat/completions"
     errors: list[str] = []
-
     for address in endpoint.addresses:
         pool = _pool_for(endpoint, address)
         response = None
         try:
-            response = pool.urlopen(
-                "POST",
-                target,
-                body=body,
-                headers=request_headers,
-                redirect=False,
-                retries=False,
-                preload_content=False,
-            )
+            response = pool.urlopen(method, target, body=body, headers=request_headers, redirect=False, retries=False, preload_content=False)
             data = response.read(_MAX_RESPONSE_BYTES + 1)
             if len(data) > _MAX_RESPONSE_BYTES:
-                raise PinnedRequestError("The LLM endpoint response exceeded the 5 MiB safety limit.")
+                raise PinnedRequestError("The endpoint response exceeded the 5 MiB safety limit.")
             return int(response.status), data
         except PinnedRequestError:
             raise
@@ -96,6 +70,23 @@ def post_json_pinned(
             if response is not None:
                 response.release_conn()
             pool.close()
-
     detail = "; ".join(errors[:3]) or "no validated address accepted the connection"
-    raise PinnedRequestError(f"Could not reach the LLM endpoint via its validated addresses: {detail}")
+    raise PinnedRequestError(f"Could not reach the endpoint via its validated addresses: {detail}")
+
+
+def post_json_pinned(endpoint: ValidatedEndpoint, payload: dict[str, Any], headers: dict[str, str] | None = None) -> tuple[int, bytes]:
+    """POST bounded JSON to one of the exact IP addresses that passed endpoint validation."""
+    body = json.dumps(payload, ensure_ascii=False).encode("utf-8")
+    if len(body) > _MAX_REQUEST_BYTES:
+        raise PinnedRequestError("The LLM request exceeded the 96 KiB safety limit.")
+    request_headers = dict(headers or {})
+    request_headers.setdefault("Content-Type", "application/json")
+    target = f"{endpoint.base_path}/v1/chat/completions" if endpoint.base_path else "/v1/chat/completions"
+    return _request_pinned(endpoint, "POST", target, body=body, headers=request_headers)
+
+
+def get_pinned(endpoint: ValidatedEndpoint, target: str, headers: dict[str, str] | None = None) -> tuple[int, bytes]:
+    """GET a bounded relative path without re-resolving the validated hostname."""
+    if endpoint.base_path and not target.startswith(endpoint.base_path + "/") and target != endpoint.base_path:
+        target = f"{endpoint.base_path}{target}"
+    return _request_pinned(endpoint, "GET", target, headers=headers)
