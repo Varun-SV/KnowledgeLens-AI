@@ -75,17 +75,27 @@ def restore_active_profile_environment(database: Database | None = None) -> dict
     return profile
 
 
-def active_profile_secret_for_endpoint(endpoint_base_url: str) -> str | None:
+def _active_profile_for_endpoint(endpoint_base_url: str) -> dict | None:
     database = Database()
     try:
         profile = active_profile_record(database)
     except DatabaseUnavailable:
         return None
+    if not profile or str(profile["base_url"]).rstrip("/") != endpoint_base_url.rstrip("/"):
+        return None
+    return profile
+
+
+def active_profile_model_for_endpoint(endpoint_base_url: str) -> str | None:
+    profile = _active_profile_for_endpoint(endpoint_base_url)
+    return str(profile["default_model"]) if profile else None
+
+
+def active_profile_secret_for_endpoint(endpoint_base_url: str) -> str | None:
+    profile = _active_profile_for_endpoint(endpoint_base_url)
     if not profile or not profile.get("secret_ref"):
         return None
-    if str(profile["base_url"]).rstrip("/") != endpoint_base_url.rstrip("/"):
-        return None
     try:
-        return build_secret_store(database).get(str(profile["secret_ref"]))
+        return build_secret_store(Database()).get(str(profile["secret_ref"]))
     except RuntimeError:
         return None
