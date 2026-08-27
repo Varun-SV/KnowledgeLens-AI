@@ -3,3 +3,6 @@ pypdf>=6.4,<7
 pyvis>=0.3.2,<0.4
 streamlit>=1.54,<2
 urllib3>=2.2,<3
+psycopg[binary]>=3.3,<4
+keyring>=25.7,<26
+cryptography>=50,<51
