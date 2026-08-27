@@ -1,4 +1,5 @@
 import os
+import uuid
 
 import pytest
 
@@ -50,7 +51,7 @@ def test_schema_initialization_is_idempotent_and_seeds_profiles():
     } <= tables
 
 
-def test_active_profile_persists_and_bootstrap_admin_is_one_time(monkeypatch):
+def test_active_profile_persists_and_bootstrap_admin_is_one_time():
     database = _database()
     database.initialize()
     repository = ProviderProfileRepository(database)
@@ -69,6 +70,20 @@ def test_active_profile_persists_and_bootstrap_admin_is_one_time(monkeypatch):
     assert active["default_model"] == "gpt-4o-mini"
     assert os.environ["KNOWLEDGELENS_CUSTOM_ENDPOINT"] == "https://api.openai.com"
     assert os.environ["KNOWLEDGELENS_CUSTOM_MODEL"] == "gpt-4o-mini"
+
+    with pytest.raises(ValueError, match="does not exist"):
+        set_active_profile(database, str(uuid.uuid4()))
+
+    with pytest.raises(ValueError, match="read-only"):
+        repository.save(
+            name=openai.name,
+            provider_type=openai.provider_type,
+            base_url=openai.base_url,
+            default_model=openai.default_model,
+            capabilities=openai.capabilities,
+            profile_id=openai.id,
+            is_builtin=True,
+        )
 
     assert bootstrap_admin(database, "integration-admin", "correct horse battery staple") is True
     assert bootstrap_admin(database, "second-admin", "correct horse battery staple") is False
